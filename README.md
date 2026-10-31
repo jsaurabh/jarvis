@@ -169,3 +169,7 @@ jarvis/flywheel.py       Review bundle and durable regression-case builder
 jarvis/evals.py          Quality snapshots and model promotion gates
 jarvis/train.py          Optional local LoRA training pipeline
 ```
+
+## License
+
+Jarvis is available under the [MIT License](LICENSE).
