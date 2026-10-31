@@ -700,11 +700,11 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
       title: "Learning & Quality…", action: #selector(showQuality), keyEquivalent: "")
     qualityItem.target = self
     menu.addItem(qualityItem)
+    menu.addItem(.separator())
     let setupItem = NSMenuItem(
       title: "Setup Jarvis…", action: #selector(showSetup), keyEquivalent: ",")
     setupItem.target = self
     menu.addItem(setupItem)
-    menu.addItem(.separator())
     let quit = NSMenuItem(title: "Quit Jarvis", action: #selector(quitApp), keyEquivalent: "q")
     quit.target = self
     menu.addItem(quit)
