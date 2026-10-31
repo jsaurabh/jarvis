@@ -86,8 +86,6 @@ final class LoginController {
       .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
   }
 
-  var enabled: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
-
   func setEnabled(_ enabled: Bool) throws {
     if enabled {
       guard let executable = Bundle.main.executablePath else {
@@ -583,7 +581,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   private var liveVoice: RealtimeVoiceController?
   private var statusMenuItem = NSMenuItem()
   private var listeningItem = NSMenuItem()
-  private var loginItem = NSMenuItem()
   private var rateResultItem = NSMenuItem()
   private var reviewApprovalItem = NSMenuItem()
   private var lastRunID: String?
@@ -658,6 +655,11 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
 
   private func configureMenu() {
     let menu = NSMenu()
+    listeningItem = NSMenuItem(
+      title: "Listening", action: #selector(toggleListening), keyEquivalent: "")
+    listeningItem.target = self
+    menu.addItem(listeningItem)
+    menu.addItem(.separator())
     statusMenuItem = NSMenuItem(title: "Jarvis is starting…", action: nil, keyEquivalent: "")
     statusMenuItem.isEnabled = false
     menu.addItem(statusMenuItem)
@@ -679,14 +681,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     rateResultItem.isEnabled = false
     menu.addItem(rateResultItem)
     menu.addItem(.separator())
-    listeningItem = NSMenuItem(
-      title: "Listening", action: #selector(toggleListening), keyEquivalent: "")
-    listeningItem.target = self
-    loginItem = NSMenuItem(
-      title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
-    loginItem.target = self
-    menu.addItem(listeningItem)
-    menu.addItem(loginItem)
     let memoriesItem = NSMenuItem(
       title: "Saved Memories…", action: #selector(showMemories), keyEquivalent: "")
     memoriesItem.target = self
@@ -719,7 +713,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
 
   private func refreshMenu() {
     listeningItem.state = listeningEnabled ? .on : .off
-    loginItem.state = login.enabled ? .on : .off
     rateResultItem.isEnabled = lastRunID != nil
     statusMenuItem.title = listeningEnabled ? "Jarvis is listening" : "Jarvis is paused"
     if let image = menuBarImage {
@@ -738,11 +731,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     listeningEnabled.toggle()
     refreshMenu()
     if listeningEnabled { requestSpeechAccess() } else { liveVoice?.stop() }
-  }
-
-  @objc private func toggleLogin() {
-    do { try login.setEnabled(!login.enabled) } catch { showError(error.localizedDescription) }
-    refreshMenu()
   }
 
   @objc private func updateAPIKey() {

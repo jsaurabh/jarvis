@@ -56,6 +56,8 @@ source .venv/bin/activate
 open dist/Jarvis.app
 ```
 
+The setup script registers Jarvis to open automatically. Manage that behavior in **System Settings → General → Login Items & Extensions**.
+
 Without `uv`, create a virtual environment and install the project with:
 
 ```bash
@@ -93,7 +95,7 @@ Useful phrases include:
 - “That was useful”
 - “Correction: …”
 
-The menu provides text chat, recent activity, pending approvals, memories, reminders, automations, skills, learning metrics, listening controls, login controls, and a **Quit Jarvis** command.
+The menu provides text chat, recent activity, pending approvals, memories, reminders, automations, skills, learning metrics, listening controls, and a **Quit Jarvis** command.
 
 When **Listening** is on, microphone audio is streamed to the configured OpenAI Realtime model. Turning it off closes the live session and stops microphone capture.
 
