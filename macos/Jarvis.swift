@@ -672,7 +672,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     reviewApprovalItem.isHidden = true
     menu.addItem(reviewApprovalItem)
     let activityItem = NSMenuItem(
-      title: "Recent Activity…", action: #selector(showRecentActivity), keyEquivalent: "")
+      title: "View Recent Activity…", action: #selector(openTraceDashboard), keyEquivalent: "")
     activityItem.target = self
     menu.addItem(activityItem)
     rateResultItem = NSMenuItem(
@@ -884,27 +884,9 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     }
   }
 
-  @objc private func showRecentActivity() {
-    guard let backend else { return }
-    backend.listTasks { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .failure(let error): self.showError(error.localizedDescription)
-      case .success(let response):
-        let tasks = response.details["tasks"] as? [[String: Any]] ?? []
-        let lines = tasks.map { task in
-          let status = task["status"] as? String ?? "unknown"
-          let request = task["request"] as? String ?? "Task"
-          return "[\(status)] \(request)"
-        }
-        let alert = makeJarvisAlert()
-        alert.messageText = "Recent Jarvis Activity"
-        alert.informativeText =
-          lines.isEmpty ? "No agent tasks yet." : lines.joined(separator: "\n\n")
-        alert.addButton(withTitle: "Done")
-        alert.runModal()
-      }
-    }
+  @objc private func openTraceDashboard() {
+    guard let url = URL(string: "https://platform.openai.com/logs?api=traces") else { return }
+    NSWorkspace.shared.open(url)
   }
 
   @objc private func showMemories() {
@@ -1100,11 +1082,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
           """
         alert.addButton(withTitle: "Done")
         alert.addButton(withTitle: "Open Trace Dashboard")
-        if alert.runModal() == .alertSecondButtonReturn,
-          let url = URL(string: "https://platform.openai.com/logs?api=traces")
-        {
-          NSWorkspace.shared.open(url)
-        }
+        if alert.runModal() == .alertSecondButtonReturn { self.openTraceDashboard() }
       }
     }
   }
