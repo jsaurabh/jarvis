@@ -1085,8 +1085,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
           Explicitly negative: \(negative)
           Failed runs: \(failed)
           Training-eligible examples: \(eligible)
-
-          Only positively rated or human-corrected traces enter training exports. Model promotion remains blocked until evaluation gates pass.
           """
         alert.addButton(withTitle: "Done")
         alert.runModal()
