@@ -1401,12 +1401,13 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   }
 
   private func promptForAPIKey(cancelTitle: String = "Quit") -> String? {
-    let entry = APIKeyEntryView()
+    let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+    field.placeholderString = "sk-…"
     let alert = makeJarvisAlert()
     alert.messageText = "Connect Jarvis to OpenAI"
     alert.informativeText =
       "Enter your OpenAI API key. It will be stored in macOS Keychain, not in the project."
-    alert.accessoryView = entry
+    alert.accessoryView = field
     alert.addButton(withTitle: "Save")
     alert.addButton(withTitle: cancelTitle)
 
@@ -1424,7 +1425,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     defer { NSApp.setActivationPolicy(previousPolicy) }
 
     guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-    let value = entry.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty, saveAPIKey(value) else {
       showError("The API key could not be saved to Keychain.")
       return nil
@@ -1441,11 +1442,44 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   }
 }
 
+private func configureApplicationMenu(_ application: NSApplication) {
+  let mainMenu = NSMenu()
+
+  let applicationMenuItem = NSMenuItem()
+  let applicationMenu = NSMenu(title: "Jarvis")
+  applicationMenu.addItem(
+    withTitle: "Quit Jarvis",
+    action: #selector(NSApplication.terminate(_:)),
+    keyEquivalent: "q"
+  )
+  applicationMenuItem.submenu = applicationMenu
+  mainMenu.addItem(applicationMenuItem)
+
+  let editMenuItem = NSMenuItem()
+  let editMenu = NSMenu(title: "Edit")
+  editMenu.addItem(withTitle: "Undo", action: #selector(UndoManager.undo), keyEquivalent: "z")
+  editMenu.addItem(.separator())
+  editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+  editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+  editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+  editMenu.addItem(.separator())
+  editMenu.addItem(
+    withTitle: "Select All",
+    action: #selector(NSText.selectAll(_:)),
+    keyEquivalent: "a"
+  )
+  editMenuItem.submenu = editMenu
+  mainMenu.addItem(editMenuItem)
+
+  application.mainMenu = mainMenu
+}
+
 @main
 enum JarvisMain {
   @MainActor
   static func main() {
     let application = NSApplication.shared
+    configureApplicationMenu(application)
     let delegate = JarvisApp()
     application.delegate = delegate
     application.run()
