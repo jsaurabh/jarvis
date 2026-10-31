@@ -36,6 +36,8 @@ The menu-bar app handles audio, native controls, notifications, and macOS permis
 
 OpenAI Realtime provides streaming speech. The OpenAI Agents SDK drives model and tool execution. Agent state, approvals, feedback, and observable execution traces are stored locally in SQLite.
 
+Each Agents SDK trace is correlated with its Jarvis run, task, session, interface, and harness version. Completed SDK spans are mirrored into the local database for latency and tool/model-call analysis. The SDK also sends redacted traces to the OpenAI trace dashboard; set `JARVIS_OPENAI_TRACE_CONTENT=true` only if you intentionally want model and tool inputs and outputs included there.
+
 ## Requirements
 
 - macOS 14 or newer on Apple silicon
@@ -154,6 +156,15 @@ jarvis-flywheel report
 jarvis-flywheel snapshot
 jarvis-flywheel bundle --bundle-dir exports/flywheel
 jarvis-flywheel export --output exports/jarvis-trajectories.jsonl
+```
+
+Flywheel bundles include correlated SDK telemetry for the selected reviewable runs, with sensitive-pattern filtering applied independently to both trajectories and telemetry records.
+
+Inspect or export the lower-level SDK telemetry with:
+
+```bash
+jarvis-telemetry report
+jarvis-telemetry export --output exports/jarvis-telemetry.jsonl
 ```
 
 Optional LoRA training is available through the `training` dependency group:

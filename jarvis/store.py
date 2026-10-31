@@ -103,6 +103,15 @@ class TraceStore:
               FOREIGN KEY(run_id) REFERENCES runs(id)
             );
             CREATE INDEX IF NOT EXISTS idx_run_scores_grader ON run_scores(grader, score);
+            CREATE TABLE IF NOT EXISTS telemetry_records (
+              record_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, run_id TEXT,
+              parent_id TEXT, kind TEXT NOT NULL, name TEXT,
+              started_at TEXT, ended_at TEXT, duration_ms REAL,
+              payload TEXT NOT NULL,
+              FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_telemetry_run ON telemetry_records(run_id, started_at);
+            CREATE INDEX IF NOT EXISTS idx_telemetry_trace ON telemetry_records(trace_id, started_at);
             """
         )
         self._conn.commit()
@@ -248,6 +257,105 @@ class TraceStore:
                 (run_id, now(), kind, json.dumps(clean, ensure_ascii=False, default=str)),
             )
             self._conn.commit()
+
+    def record_telemetry(self, payload: dict[str, Any], run_id: str | None = None) -> None:
+        """Persist one completed Agents SDK trace or span without blocking the agent loop."""
+        if self.trace_mode == "off":
+            return
+        clean = redact(payload)
+        object_type = str(clean.get("object", ""))
+        record_id = str(clean.get("id", ""))
+        if not record_id or object_type not in {"trace", "trace.span"}:
+            return
+        trace_id = record_id if object_type == "trace" else str(clean.get("trace_id", ""))
+        if not trace_id:
+            return
+        span_data = clean.get("span_data") if isinstance(clean.get("span_data"), dict) else {}
+        kind = "trace" if object_type == "trace" else str(span_data.get("type", "span"))
+        name = (
+            clean.get("workflow_name")
+            if object_type == "trace"
+            else span_data.get("name") or span_data.get("type")
+        )
+        started_at = clean.get("started_at")
+        ended_at = clean.get("ended_at")
+        duration_ms: float | None = None
+        if isinstance(started_at, str) and isinstance(ended_at, str):
+            with suppress(ValueError):
+                duration_ms = (
+                    datetime.fromisoformat(ended_at) - datetime.fromisoformat(started_at)
+                ).total_seconds() * 1000
+        if self.trace_mode == "metadata":
+            clean = {
+                "object": object_type,
+                "id": record_id,
+                "trace_id": trace_id,
+                "parent_id": clean.get("parent_id"),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "span_data": {"type": kind, "name": name},
+                "error": bool(clean.get("error")),
+            }
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO telemetry_records(record_id, trace_id, run_id, parent_id, kind, name, "
+                "started_at, ended_at, duration_ms, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(record_id) DO UPDATE SET run_id = COALESCE(excluded.run_id, run_id), "
+                "parent_id = excluded.parent_id, kind = excluded.kind, name = excluded.name, "
+                "started_at = excluded.started_at, ended_at = excluded.ended_at, "
+                "duration_ms = excluded.duration_ms, payload = excluded.payload",
+                (
+                    record_id,
+                    trace_id,
+                    run_id,
+                    clean.get("parent_id"),
+                    kind,
+                    str(name) if name is not None else None,
+                    started_at,
+                    ended_at,
+                    duration_ms,
+                    json.dumps(clean, ensure_ascii=False, default=str),
+                ),
+            )
+            self._conn.commit()
+
+    def telemetry_records(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        where = "WHERE run_id = ?" if run_id else ""
+        parameters = (run_id,) if run_id else ()
+        rows = self._conn.execute(
+            "SELECT record_id, trace_id, run_id, parent_id, kind, name, started_at, ended_at, "
+            f"duration_ms, payload FROM telemetry_records {where} "
+            "ORDER BY COALESCE(started_at, ''), record_id",
+            parameters,
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
+    def telemetry_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        return self.telemetry_records(run_id)
+
+    def telemetry_metrics(self) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT trace_id) AS traces, "
+            "SUM(CASE WHEN kind != 'trace' THEN 1 ELSE 0 END) AS spans, "
+            "SUM(CASE WHEN kind IN ('generation', 'response') THEN 1 ELSE 0 END) AS model_calls, "
+            "SUM(CASE WHEN kind = 'function' THEN 1 ELSE 0 END) AS tool_calls, "
+            "AVG(CASE WHEN kind = 'trace' THEN NULL ELSE duration_ms END) AS average_span_ms, "
+            "SUM(CASE WHEN run_id IS NOT NULL THEN 1 ELSE 0 END) AS correlated_records "
+            "FROM telemetry_records"
+        ).fetchone()
+        return {
+            "traces": int(row["traces"] or 0),
+            "spans": int(row["spans"] or 0),
+            "model_calls": int(row["model_calls"] or 0),
+            "tool_calls": int(row["tool_calls"] or 0),
+            "average_span_ms": float(row["average_span_ms"] or 0),
+            "correlated_records": int(row["correlated_records"] or 0),
+        }
 
     def update_response_id(self, session_id: str, response_id: str) -> None:
         with self._lock:

@@ -33,6 +33,19 @@ def build_improvement_bundle(store: Any, output_dir: Path) -> dict[str, Any]:
         for episode in selected:
             handle.write(json.dumps(episode, ensure_ascii=False, separators=(",", ":")) + "\n")
 
+    telemetry = []
+    excluded_telemetry = 0
+    for episode in selected:
+        for record in store.telemetry_for_run(episode["episode_id"]):
+            if sensitive_reasons(record):
+                excluded_telemetry += 1
+                continue
+            telemetry.append(record)
+    telemetry_path = output_dir / "sdk-telemetry.jsonl"
+    with telemetry_path.open("w", encoding="utf-8") as handle:
+        for record in telemetry:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
     eval_cases = []
     for run in runs:
         if not run.get("correction"):
@@ -63,11 +76,14 @@ def build_improvement_bundle(store: Any, output_dir: Path) -> dict[str, Any]:
         "created_at": utc_now(),
         "metrics": metrics,
         "reviewable_traces": len(selected),
+        "telemetry_records": len(telemetry),
         "regression_cases": len(eval_cases),
         "harness_versions": len(contexts),
         "excluded_sensitive": excluded_sensitive,
+        "excluded_sensitive_telemetry": excluded_telemetry,
         "files": {
             "traces": str(traces_path),
+            "telemetry": str(telemetry_path),
             "eval_cases": str(eval_path),
             "harness_snapshots": str(harness_path),
         },
@@ -86,9 +102,11 @@ Generated: {summary["created_at"]}
 - Corrected examples: {metrics["corrected"]}
 - Failed runs: {metrics["failed"]}
 - Reviewable traces in this bundle: {len(selected)}
+- Correlated SDK telemetry records: {len(telemetry)}
 - Durable regression cases: {len(eval_cases)}
 - Harness snapshots: {len(contexts)}
 - Sensitive traces excluded: {excluded_sensitive}
+- Sensitive telemetry records excluded: {excluded_telemetry}
 
 ## Review loop
 

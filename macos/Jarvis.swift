@@ -1077,6 +1077,12 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
         let positive = metrics["positive"] as? Int ?? 0
         let negative = metrics["negative"] as? Int ?? 0
         let failed = metrics["failed"] as? Int ?? 0
+        let telemetry = metrics["telemetry"] as? [String: Any] ?? [:]
+        let traces = telemetry["traces"] as? Int ?? 0
+        let spans = telemetry["spans"] as? Int ?? 0
+        let modelCalls = telemetry["model_calls"] as? Int ?? 0
+        let toolCalls = telemetry["tool_calls"] as? Int ?? 0
+        let averageSpan = telemetry["average_span_ms"] as? Double ?? 0
         let alert = makeJarvisAlert()
         alert.messageText = "Jarvis Learning & Quality"
         alert.informativeText = """
@@ -1085,9 +1091,20 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
           Explicitly negative: \(negative)
           Failed runs: \(failed)
           Training-eligible examples: \(eligible)
+
+          Local SDK traces: \(traces)
+          Detailed spans: \(spans)
+          Model calls: \(modelCalls)
+          Tool calls: \(toolCalls)
+          Average span time: \(Int(averageSpan.rounded())) ms
           """
         alert.addButton(withTitle: "Done")
-        alert.runModal()
+        alert.addButton(withTitle: "Open Trace Dashboard")
+        if alert.runModal() == .alertSecondButtonReturn,
+          let url = URL(string: "https://platform.openai.com/logs?api=traces")
+        {
+          NSWorkspace.shared.open(url)
+        }
       }
     }
   }

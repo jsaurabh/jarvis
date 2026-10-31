@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     jarvis_enable_commands: bool = True
     jarvis_enable_web_search: bool = True
     jarvis_trace_mode: str = "full"
+    jarvis_openai_trace_content: bool = False
     jarvis_db_path: Path = Path("./data/jarvis.db")
     jarvis_max_tool_steps: int = 12
     jarvis_tool_output_limit: int = 40_000

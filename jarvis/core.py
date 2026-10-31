@@ -42,6 +42,7 @@ class JarvisCore:
             ToolExecutor(settings),
             reminders=self.reminders,
             skills=self.skills,
+            store=self.store,
         )
         self.event_sink = event_sink
         self._active: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -202,6 +203,7 @@ class JarvisCore:
 
     def quality_report(self) -> dict[str, Any]:
         metrics = self.store.quality_metrics()
+        metrics["telemetry"] = self.store.telemetry_metrics()
         return {
             "status": "completed",
             "message": "Jarvis quality metrics are ready.",
@@ -234,9 +236,22 @@ class JarvisCore:
 
         async def resume() -> dict[str, Any]:
             try:
-                turn = await self.agent.resume(
-                    approval["session_id"], approval["checkpoint"], approved
+                run_context = self._telemetry_context(
+                    run_id,
+                    task_id,
+                    self.store.run_context(run_id) or {},
                 )
+                if callable(getattr(self.agent, "accepts_run_context", None)):
+                    turn = await self.agent.resume(
+                        approval["session_id"],
+                        approval["checkpoint"],
+                        approved,
+                        run_context=run_context,
+                    )
+                else:
+                    turn = await self.agent.resume(
+                        approval["session_id"], approval["checkpoint"], approved
+                    )
                 return await self._apply_turn(task_id, run_id, approval["session_id"], turn)
             except asyncio.CancelledError:
                 self.store.cancel_run(run_id)
@@ -391,7 +406,13 @@ class JarvisCore:
             self.store.event(run_id, "restart_recovery", {"task_id": task_id})
         await self._emit(task_id, "running", "Working")
         try:
-            turn = await self.agent.chat(task["session_id"], task["request"])
+            run_context = self._telemetry_context(run_id, task_id, context)
+            if callable(getattr(self.agent, "accepts_run_context", None)):
+                turn = await self.agent.chat(
+                    task["session_id"], task["request"], run_context=run_context
+                )
+            else:
+                turn = await self.agent.chat(task["session_id"], task["request"])
             return await self._apply_turn(task_id, run_id, task["session_id"], turn)
         except asyncio.CancelledError:
             self.store.cancel_run(run_id)
@@ -413,6 +434,16 @@ class JarvisCore:
                     }
                 )
             raise
+
+    @staticmethod
+    def _telemetry_context(run_id: str, task_id: str, harness: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "task_id": task_id,
+            "interface": harness.get("interface"),
+            "harness_sha256": harness.get("harness_sha256"),
+            "harness_version": harness.get("version"),
+        }
 
     async def _apply_turn(
         self, task_id: str, run_id: str, session_id: str, turn: SDKTurn

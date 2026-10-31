@@ -7,10 +7,12 @@ from typing import Any
 from agents import (
     Agent,
     ModelSettings,
+    RunConfig,
     Runner,
     RunState,
     SQLiteSession,
     WebSearchTool,
+    add_trace_processor,
     function_tool,
     set_default_openai_api,
     set_default_openai_client,
@@ -24,6 +26,8 @@ from .learning import harness_snapshot as build_harness_snapshot
 from .reminders import ReminderStore
 from .security import redact
 from .skills import SkillStore
+from .store import TraceStore
+from .telemetry import LocalTelemetryProcessor
 from .tools import ToolExecutor
 
 
@@ -59,6 +63,7 @@ class SDKJarvisAgent:
         executor: ToolExecutor,
         reminders: ReminderStore | None = None,
         skills: SkillStore | None = None,
+        store: TraceStore | None = None,
     ) -> None:
         self.settings = settings
         self.executor = executor
@@ -79,6 +84,8 @@ class SDKJarvisAgent:
         set_tracing_disabled(
             settings.jarvis_trace_mode == "off" or settings.jarvis_base_url is not None
         )
+        if store is not None and settings.jarvis_trace_mode != "off":
+            add_trace_processor(LocalTelemetryProcessor(store))
 
         tools: list[Any] = self._local_tools()
         if settings.jarvis_enable_web_search:
@@ -321,12 +328,36 @@ class SDKJarvisAgent:
             messages_table="sdk_messages",
         )
 
-    async def chat(self, session_id: str, text: str) -> SDKTurn:
+    @staticmethod
+    def accepts_run_context() -> bool:
+        return True
+
+    def _run_config(self, session_id: str, run_context: dict[str, Any] | None = None) -> RunConfig:
+        context = run_context or {}
+        metadata = {
+            key: context[key]
+            for key in ("run_id", "task_id", "interface", "harness_sha256", "harness_version")
+            if context.get(key) is not None
+        }
+        return RunConfig(
+            workflow_name="Jarvis agent task",
+            group_id=session_id,
+            trace_metadata=metadata,
+            trace_include_sensitive_data=self.settings.jarvis_openai_trace_content,
+        )
+
+    async def chat(
+        self,
+        session_id: str,
+        text: str,
+        run_context: dict[str, Any] | None = None,
+    ) -> SDKTurn:
         result = await Runner.run(
             self.agent,
             text,
             session=self._session(session_id),
             max_turns=self.settings.jarvis_max_tool_steps,
+            run_config=self._run_config(session_id, run_context),
         )
         return self._turn_from_result(result)
 
@@ -335,6 +366,7 @@ class SDKJarvisAgent:
         session_id: str,
         checkpoint: dict[str, Any],
         approved: bool,
+        run_context: dict[str, Any] | None = None,
     ) -> SDKTurn:
         state = await RunState.from_json(self.agent, checkpoint)
         interruptions = state.get_interruptions()
@@ -349,6 +381,7 @@ class SDKJarvisAgent:
             state,
             session=self._session(session_id),
             max_turns=self.settings.jarvis_max_tool_steps,
+            run_config=self._run_config(session_id, run_context),
         )
         return self._turn_from_result(result)
 
