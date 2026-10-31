@@ -9,8 +9,8 @@
   <key>CFBundleName</key><string>Jarvis</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>Jarvis.icns</string>
-  <key>CFBundleShortVersionString</key><string>1.1.0</string>
-  <key>CFBundleVersion</key><string>23</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>JarvisProjectPath</key><string>__JARVIS_PROJECT_PATH__</string>
   <key>NSMicrophoneUsageDescription</key><string>Jarvis streams microphone audio to the configured OpenAI live voice model while Listening is enabled.</string>

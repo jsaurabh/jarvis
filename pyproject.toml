@@ -1,6 +1,6 @@
 [project]
 name = "local-jarvis"
-version = "1.1.0"
+version = "0.1.0"
 description = "A local-first personal agent with voice, approvals, traces, and training-data exports"
 readme = "README.md"
 license = "MIT"

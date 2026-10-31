@@ -1,23 +1,54 @@
-# Jarvis for macOS
+# Jarvis
 
-Jarvis is a native, always-available macOS menu-bar agent. There is no web interface. A persistent local Jarvis Core process now owns durable tasks, OpenAI Agents SDK sessions, approvals, cancellation, restart recovery, and traces; voice is one realtime interface to that core.
+Jarvis is an open-source, local-first personal agent for macOS. It lives in the menu bar, responds to voice or text, works with files and applications on your Mac, and keeps a durable record of its work so you can improve both the agent harness and the model behind it.
 
-Version 1.1 includes explicit long-term memory, durable reminders, scheduled full-agent automations, native text chat, inspectable skills, macOS application and Calendar tools, approval checkpoints, versioned agent trajectories, trace-backed evaluation gates, and tool-aware local LoRA training support.
+This repository is the first public release. It is useful today, but its interfaces, storage format, and setup flow may evolve quickly.
 
-Saved memories remain local and are not silently inserted into model requests. Voice or automatic recall requires a separate privacy opt-in because recalled content would be sent to OpenAI to formulate the answer.
+## What it can do
 
-When Listening is enabled, Jarvis keeps a low-latency OpenAI Realtime audio session open. Say **Jarvis** followed by a request, then continue the conversation naturally without repeating the wake word:
+- Hold low-latency voice conversations with streaming speech and interruption support.
+- Continue the same work through native text chat.
+- Read files across local disks and mounted network volumes.
+- Work with applications, Calendar, the clipboard, URLs, and local commands.
+- Remember user-approved facts, create reminders, and run scheduled agent tasks.
+- Pause sensitive actions for explicit approval.
+- Recover safe unfinished work after a restart.
+- Capture structured trajectories, feedback, evaluations, and training exports.
 
-> “Jarvis, summarize the latest notes in my Documents folder.”
+## How it works
 
-Microphone audio is streamed to the configured Realtime model while Listening is enabled. Responses begin playing as they are generated, and speaking over Jarvis interrupts it immediately. File, device, mounted-drive, current-web, and action requests delegate to the existing local tool agent; file writes and local commands still require a spoken **approve** or **deny** first.
+Jarvis has two cooperating layers:
 
-## First-time setup
+```text
+Voice or text
+      │
+      ▼
+macOS menu-bar app ── Realtime speech, notifications, Keychain, approvals
+      │
+      ▼
+Local agent core ──── Tasks, tools, memory, automations, traces, recovery
+      │                    │
+      ├── OpenAI models    └── SQLite data store
+      └── Your Mac
+```
 
-From the repository root:
+The menu-bar app handles audio, native controls, notifications, and macOS permissions. A persistent local Python process runs the agent loop and manages durable work. The two communicate through private process pipes.
+
+OpenAI Realtime provides streaming speech. The OpenAI Agents SDK drives model and tool execution. Agent state, approvals, feedback, and observable execution traces are stored locally in SQLite.
+
+## Requirements
+
+- macOS 14 or newer on Apple silicon
+- Python 3.11 or newer
+- Xcode Command Line Tools
+- An OpenAI API key
+- [`uv`](https://docs.astral.sh/uv/) recommended for Python environment management
+
+## Install
+
+Clone the repository and run:
 
 ```bash
-# Reproducible install from uv.lock
 uv sync --extra dev
 source .venv/bin/activate
 ./scripts/build_macos.sh
@@ -25,120 +56,141 @@ source .venv/bin/activate
 open dist/Jarvis.app
 ```
 
-Without `uv`, create a virtual environment and run `python -m pip install -e '.[dev]'`.
-
-First launch performs three one-time steps:
-
-1. Enter an OpenAI API key. It is stored in macOS Keychain, not `.env` or source control.
-2. Allow microphone and notification access.
-3. When first using computer or Calendar tools, approve the relevant macOS Automation or Accessibility permission.
-
-Jarvis then appears in the menu bar. Its native controls include:
-
-- **Ask Jarvis…** — typed chat using the same durable agent as voice.
-- **Review Pending Action…** — approve or deny a paused side effect without using voice.
-- **Recent Activity…** — inspect recent durable agent work.
-- **Listening** — pause or resume the wake word.
-- **Start at Login** — start automatically after signing in or restarting. Enabled by default on first launch.
-- **Saved Memories…** — inspect locally saved memories and forget individual items.
-- **Reminders…** — inspect active reminders and cancel individual items.
-- **Automations…** — inspect, pause, resume, or cancel scheduled full-agent work.
-- **Skills…** — inspect installed Jarvis procedures.
-- **Learning & Quality…** — inspect feedback and training eligibility.
-- **Rate Last Result…** — mark a result useful, unhelpful, or save a corrected answer.
-- **Quit Jarvis** — end the current process. If Start at Login remains enabled, it starts again next login.
-
-The two toggle values persist across restarts. No browser or local web server is involved.
-
-## Voice behavior
-
-- Say **“Jarvis”** and then the first request. Follow-up turns are conversational.
-- Interrupt Jarvis simply by speaking; queued audio is discarded and the new turn takes priority.
-- Ask **“What are you working on?”** for the latest durable task state.
-- Say **“Remember that …”** to save an explicit local memory.
-- Say **“Remind me …”** to create a durable native notification.
-- Say **“Every morning, review …”** to schedule recurring full-agent work.
-- Say **“Stop”** or **“Cancel that task”** to cancel ongoing agent work.
-- For a write or command, Jarvis describes the action and asks you to say **approve** or **deny**.
-- Say **“Jarvis, that was useful”** to mark the last result as training-eligible.
-- Say **“Jarvis, correction …”** followed by the better answer to save a corrected target.
-
-The Listening toggle is the privacy boundary: when it is on, microphone audio is streamed to the OpenAI Realtime API; when it is off, the live session and microphone capture stop.
-
-## Machine access
-
-The native launcher gives the tool layer `/` as its allowed root, matching the requested machine-wide scope. macOS privacy controls still apply. To reach protected folders, add `Jarvis.app` under **System Settings → Privacy & Security → Full Disk Access**.
-
-Mounted network shares appear below `/Volumes` and work like local paths. Remote machines can be reached through an approved `ssh` command after SSH keys and host access are configured separately.
-
-File reads happen without a prompt. Clipboard reads, Calendar access, file writes, executable commands, opening apps or URLs, typing, key presses, clicks, skill changes, and calendar writes require fresh approval. Approvals can be spoken or reviewed from the menu. Commands execute as an argument array without an intervening shell, and API keys and credential-shaped environment variables are removed from child processes.
-
-Application control uses macOS Accessibility and Apple Events. Jarvis does not bypass CAPTCHA, security warnings, paywalls, or permission dialogs. It treats documents, websites, emails, calendar entries, clipboard text, screen content, and tool results as untrusted context rather than user permission.
-
-## Agent runtime
-
-The native application starts one long-lived `jarvis.daemon` child and exchanges newline-delimited JSON messages over private process pipes. The daemon can serve concurrent status and cancellation requests while an agent task is running.
-
-Each request becomes a durable task in SQLite before model work begins. Safe, pre-approval work is requeued after a restart. Work that had crossed an approved side-effect boundary is retained as interrupted for review instead of being blindly repeated. SDK approval checkpoints are serialized in SQLite and can be resumed after the native UI returns.
-
-The OpenAI Agents SDK owns the model/tool loop and its OpenAI trace. Jarvis Core separately owns task lifecycle, local audit events, permission policy, reminders, automations, skills, provider-independent state, and native notifications.
-
-Scheduled automations launch ordinary durable tasks. They can pause for approval, survive restarts, report results through native notifications, and are prevented from blindly repeating a side effect after a crash.
-
-## Traces and model flywheel
-
-Runs are stored locally in `data/jarvis.db`. Each `jarvis.trajectory.v2` episode preserves the observable request, model messages, tool calls, tool results, approvals, final answer, timing, deterministic scores, and human feedback. It also snapshots the exact prompt, tool schemas, model settings, installed skills, and their hashes, so a result can be tied to the harness that produced it. Raw microphone audio, hidden chain-of-thought, and encrypted reasoning are never put in the training dataset.
+Without `uv`, create a virtual environment and install the project with:
 
 ```bash
-source .venv/bin/activate
+python -m pip install -e '.[dev]'
+```
 
-# Preferred agent SFT: preserves tool calls, tool results, and harness context
+On first launch:
+
+1. Enter your OpenAI API key. Jarvis stores it in macOS Keychain.
+2. Allow microphone and notification access.
+3. Approve Automation, Accessibility, Calendar, or Full Disk Access only when you want Jarvis to use those capabilities.
+
+To install the built application in the standard Applications folder:
+
+```bash
+ditto dist/Jarvis.app /Applications/Jarvis.app
+open /Applications/Jarvis.app
+```
+
+## Use Jarvis
+
+Turn on **Listening**, then say the wake word followed by a request:
+
+> “Jarvis, summarize the latest notes in my Documents folder.”
+
+After the first request, continue the conversation naturally. Speak while Jarvis is responding to interrupt it.
+
+Useful phrases include:
+
+- “Remember that …”
+- “Remind me …”
+- “Every morning, review …”
+- “What are you working on?”
+- “Stop” or “Cancel that task”
+- “That was useful”
+- “Correction: …”
+
+The menu provides text chat, recent activity, pending approvals, memories, reminders, automations, skills, learning metrics, listening controls, login controls, and a **Quit Jarvis** command.
+
+When **Listening** is on, microphone audio is streamed to the configured OpenAI Realtime model. Turning it off closes the live session and stops microphone capture.
+
+## Permissions and safety
+
+Jarvis can read from the filesystem roots available to its process, including mounted volumes under `/Volumes`. macOS privacy controls continue to protect restricted locations and applications.
+
+Read-only file access does not require an approval. Actions with side effects do. Jarvis asks before it:
+
+- writes or deletes files;
+- runs local commands;
+- reads the clipboard;
+- opens applications or URLs;
+- types, clicks, or sends key presses;
+- changes Calendar data; or
+- installs or changes a skill.
+
+Approvals can be spoken or reviewed from the menu. Commands run as argument arrays without an intervening shell, and credential-shaped environment variables are removed from child processes.
+
+Documents, websites, messages, calendar entries, clipboard contents, screen content, and tool results are treated as untrusted context. They cannot grant permission or override the approval policy.
+
+## Local data and privacy
+
+Runtime data is stored in `data/jarvis.db` and is excluded from Git. The repository also excludes exports, model artifacts, build products, virtual environments, environment files, and session identifiers.
+
+Saved memories are not automatically inserted into model prompts. Raw microphone audio and hidden model reasoning are not added to training datasets.
+
+Deleting `data/jarvis.db` removes local Jarvis history, memories, reminders, automations, feedback, and task state. Back it up first if you want to preserve that data.
+
+## Training-data flywheel
+
+Jarvis records each agent run as a structured trajectory containing the observable request, model messages, tool calls, tool results, approvals, final answer, timing, scores, feedback, and a snapshot of the harness that produced it.
+
+Only explicitly useful answers and corrections are selected for supervised training exports. Corrections also produce preference pairs and reusable regression cases. Common credentials and personal identifiers are excluded by default.
+
+Export datasets with:
+
+```bash
+# Tool-aware supervised fine-tuning data
 jarvis-export --format agent_sft --output exports/jarvis-agent-sft.jsonl
 
-# Chosen/rejected pairs created from your corrections
+# Chosen/rejected preference pairs
 jarvis-export --format preference --output exports/jarvis-preference.jsonl
 
-# Common open-model conversation format
+# Open-model conversation format
 jarvis-export --format chatml --output exports/jarvis-chatml.jsonl
 
-# Complete agent trajectories
+# Complete observable trajectories
 jarvis-export --format trajectory --output exports/jarvis-trajectories.jsonl
 ```
 
-Every export produces a sibling `*.eval.jsonl` and a `*.manifest.json` containing hashes and selection counts. The split is grouped by durable task or conversation-day rather than individual turns, reducing train/evaluation leakage. Common credentials and personal identifiers are excluded by default; `--include-sensitive` is an explicit local override.
+Each export includes a deterministic evaluation split and a manifest with hashes and selection counts.
 
-All activity is retained as local review/evaluation evidence, but only explicitly useful replies and corrections enter supervised training exports. Corrections additionally become preference pairs and permanent regression cases.
-
-The 1.1 flywheel is gated rather than self-modifying:
+Inspect and package the improvement loop with:
 
 ```bash
-# Inspect quality and create a permanent evaluation snapshot
 jarvis-flywheel report
 jarvis-flywheel snapshot
-
-# Package traces, regression cases, harness versions, and a Codex handoff
 jarvis-flywheel bundle --bundle-dir exports/flywheel
-
-# Build a trajectory dataset with deterministic holdout
 jarvis-flywheel export --output exports/jarvis-trajectories.jsonl
-
-# Optional: install local training dependencies and train a LoRA adapter
-python -m pip install -e '.[training]'
-jarvis-train --base-model Qwen/Qwen3-4B --dataset exports/jarvis-agent-sft.jsonl --output models/jarvis-qwen-lora
-
-# Registration and promotion are refused until quality gates pass
-jarvis-flywheel register --name jarvis-qwen --artifact models/jarvis-qwen-lora --base-model Qwen/Qwen3-4B
-jarvis-flywheel promote --name jarvis-qwen
 ```
 
-Promotion requires at least 25 human-vetted examples, 10 rated runs, an 80% positive rating rate, and no more than a 10% run failure rate. The local trainer uses the model's chat template, preserves tool-call structure, and masks loss to assistant output where the tokenizer supports it. Training artifacts include a dataset hash and manifest for reproducibility. Jarvis never retrains, rewrites its harness, or changes its active model without review and a gated, explicit promotion step.
+Optional LoRA training is available through the `training` dependency group:
 
-To serve an owned model later, set `JARVIS_BASE_URL` and `JARVIS_MODEL` in the native process environment or adapt `BackendController`; the endpoint must implement the OpenAI Responses API tool-calling contract.
+```bash
+python -m pip install -e '.[training]'
+jarvis-train \
+  --base-model Qwen/Qwen3-4B \
+  --dataset exports/jarvis-agent-sft.jsonl \
+  --output models/jarvis-qwen-lora
+```
+
+Candidate models must pass evaluation gates before registration or promotion. Jarvis does not retrain itself or change its active model automatically.
+
+## Project layout
+
+```text
+macos/                    Native menu-bar application and realtime voice
+jarvis/core.py            Durable task lifecycle, recovery, and approvals
+jarvis/sdk_agent.py       Agents SDK model and tool loop
+jarvis/tools.py           Local capabilities and permission policy
+jarvis/store.py           SQLite state and execution traces
+jarvis/automations.py     Scheduled agent work
+jarvis/memory.py          User-controlled long-term memory
+jarvis/learning.py        Trajectories, harness snapshots, privacy filters
+jarvis/export.py          Training and evaluation dataset exports
+jarvis/evals.py           Quality metrics and model promotion gates
+jarvis/train.py           Optional local LoRA training pipeline
+tests/                    Agent, policy, storage, and export tests
+```
 
 ## Development
 
 ```bash
+uv sync --extra dev
 source .venv/bin/activate
+
 ruff check jarvis tests
 ruff format --check jarvis tests
 swift format lint --recursive macos
@@ -147,28 +199,7 @@ python -m compileall jarvis
 ./scripts/build_macos.sh
 ```
 
-Key files:
-
-```text
-macos/Jarvis.swift       Native menu bar, Keychain, persistent Core transport
-macos/RealtimeVoice.swift Persistent Realtime audio, VAD, playback, interruption handling
-jarvis/daemon.py         Long-lived private JSON task daemon
-jarvis/core.py           Durable tasks, recovery, cancellation, and approvals
-jarvis/automations.py    Once, interval, and daily full-agent schedules
-jarvis/reminders.py      Durable local notification queue
-jarvis/memory.py         User-controlled local memory
-jarvis/skills.py         Inspectable and editable local skills
-jarvis/sdk_agent.py      OpenAI Agents SDK adapter and resumable tool loop
-jarvis/native_bridge.py  Legacy one-shot compatibility bridge
-jarvis/agent.py          Legacy Responses loop and shared agent instructions
-jarvis/tools.py          Local capabilities and deterministic policy
-jarvis/store.py          SQLite tasks, traces, sessions, feedback, approvals
-jarvis/learning.py       Versioned trajectories, harness snapshots, privacy filters
-jarvis/export.py         Training and evaluation exporters
-jarvis/flywheel.py       Review bundle and durable regression-case builder
-jarvis/evals.py          Quality snapshots and model promotion gates
-jarvis/train.py          Optional local LoRA training pipeline
-```
+GitHub Actions runs the same checks on every push and pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## License
 

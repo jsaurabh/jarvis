@@ -11,7 +11,7 @@ TRACE_SCHEMA = "jarvis.trajectory.v2"
 AGENT_SFT_SCHEMA = "jarvis.agent-sft.v1"
 PREFERENCE_SCHEMA = "jarvis.preference.v1"
 HARNESS_SCHEMA = "jarvis.harness.v1"
-HARNESS_VERSION = "1.1.0"
+HARNESS_VERSION = "0.1.0"
 
 
 _SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
