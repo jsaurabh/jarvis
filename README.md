@@ -64,11 +64,9 @@ Without `uv`, create a virtual environment and install the project with:
 python -m pip install -e '.[dev]'
 ```
 
-On first launch:
+On first launch, **Setup Jarvis** guides you through the OpenAI API key and macOS permissions. The key is stored in macOS Keychain. Microphone, notifications, Accessibility, protected files, Calendar, application automation, and login behavior remain under macOS control.
 
-1. Enter your OpenAI API key. Jarvis stores it in macOS Keychain.
-2. Allow microphone and notification access.
-3. Approve Automation, Accessibility, Calendar, or Full Disk Access only when you want Jarvis to use those capabilities.
+Open **Setup Jarvis…** from the menu at any time to replace the API key, request a permission again, or jump to the relevant System Settings page.
 
 To install the built application in the standard Applications folder:
 
@@ -95,7 +93,7 @@ Useful phrases include:
 - “That was useful”
 - “Correction: …”
 
-The menu provides text chat, recent activity, pending approvals, memories, reminders, automations, skills, learning metrics, listening controls, and a **Quit Jarvis** command.
+The menu provides text chat, recent activity, pending approvals, memories, reminders, automations, skills, learning metrics, listening controls, **Setup Jarvis…**, and a **Quit Jarvis** command.
 
 When **Listening** is on, microphone audio is streamed to the configured OpenAI Realtime model. Turning it off closes the live session and stops microphone capture.
 

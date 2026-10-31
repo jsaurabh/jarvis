@@ -590,6 +590,11 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   private var cachedAutomations: [[String: Any]] = []
   private var pendingApprovalID: String?
   private var pendingApprovalDescription: String?
+  private lazy var setupController = SetupController(
+    changeAPIKey: { [weak self] completion in self?.changeAPIKey(completion: completion) },
+    enableVoice: { [weak self] completion in self?.requestSpeechAccess(completion: completion) },
+    onComplete: { [weak self] in self?.completeSetup() }
+  )
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     ProcessInfo.processInfo.disableAutomaticTermination("Jarvis is an always-on menu-bar agent.")
@@ -599,13 +604,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     NSLog("Jarvis startup: menu configured")
     let notificationCenter = UNUserNotificationCenter.current()
     notificationCenter.delegate = self
-    notificationCenter.requestAuthorization(options: [.alert, .sound]) { allowed, error in
-      if let error {
-        NSLog("Jarvis notification permission error: %@", error.localizedDescription)
-      } else {
-        NSLog("Jarvis notification permission: %@", allowed ? "allowed" : "denied")
-      }
-    }
     if !UserDefaults.standard.bool(forKey: "didInitializeLogin") {
       try? login.setEnabled(true)
       UserDefaults.standard.set(true, forKey: "didInitializeLogin")
@@ -642,7 +640,9 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     // Launch as a normal foreground app so first-run dialogs are guaranteed to
     // appear, then become a Dock-less menu-bar app once setup is complete.
     NSApp.setActivationPolicy(.accessory)
-    if listeningEnabled {
+    if !UserDefaults.standard.bool(forKey: "didCompleteSetup") {
+      DispatchQueue.main.async { [weak self] in self?.showSetup() }
+    } else if listeningEnabled {
       NSLog("Jarvis startup: requesting microphone access for live voice")
       requestSpeechAccess()
     }
@@ -700,10 +700,10 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
       title: "Learning & Quality…", action: #selector(showQuality), keyEquivalent: "")
     qualityItem.target = self
     menu.addItem(qualityItem)
-    let apiKeyItem = NSMenuItem(
-      title: "OpenAI API Key…", action: #selector(updateAPIKey), keyEquivalent: "")
-    apiKeyItem.target = self
-    menu.addItem(apiKeyItem)
+    let setupItem = NSMenuItem(
+      title: "Setup Jarvis…", action: #selector(showSetup), keyEquivalent: ",")
+    setupItem.target = self
+    menu.addItem(setupItem)
     menu.addItem(.separator())
     let quit = NSMenuItem(title: "Quit Jarvis", action: #selector(quitApp), keyEquivalent: "q")
     quit.target = self
@@ -733,13 +733,30 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     if listeningEnabled { requestSpeechAccess() } else { liveVoice?.stop() }
   }
 
-  @objc private func updateAPIKey() {
-    guard let key = promptForAPIKey() else { return }
+  @objc private func showSetup() {
+    setupController.show(apiKeyConfigured: keychainAPIKey() != nil || projectAPIKey() != nil)
+  }
+
+  private func changeAPIKey(completion: @escaping (Bool) -> Void) {
+    guard let key = promptForAPIKey(cancelTitle: "Cancel") else {
+      completion(false)
+      return
+    }
     liveVoice?.stop()
     backend?.stop()
     configureBackend(apiKey: key)
     configureLiveVoice(apiKey: key)
     if listeningEnabled { requestSpeechAccess() }
+    completion(true)
+  }
+
+  private func completeSetup() {
+    UserDefaults.standard.set(true, forKey: "didCompleteSetup")
+    if listeningEnabled,
+      AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    {
+      liveVoice?.start()
+    }
   }
 
   @objc private func quitApp() {
@@ -1123,17 +1140,20 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     completionHandler([.banner, .sound])
   }
 
-  private func requestSpeechAccess() {
+  private func requestSpeechAccess(completion: ((Bool) -> Void)? = nil) {
     AVCaptureDevice.requestAccess(for: .audio) { [weak self] allowed in
       DispatchQueue.main.async {
         guard let self else { return }
         if allowed {
+          self.listeningEnabled = true
+          self.refreshMenu()
           self.liveVoice?.start()
         } else {
           self.listeningEnabled = false
           self.refreshMenu()
           self.showError("Microphone permission is required for live voice.")
         }
+        completion?(allowed)
       }
     }
   }
@@ -1380,7 +1400,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     statusItem.button?.toolTip = value
   }
 
-  private func promptForAPIKey() -> String? {
+  private func promptForAPIKey(cancelTitle: String = "Quit") -> String? {
     let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
     field.placeholderString = "sk-…"
     let alert = makeJarvisAlert()
@@ -1389,7 +1409,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
       "Enter your OpenAI API key. It will be stored in macOS Keychain, not in the project."
     alert.accessoryView = field
     alert.addButton(withTitle: "Save")
-    alert.addButton(withTitle: "Quit")
+    alert.addButton(withTitle: cancelTitle)
 
     // LSUIElement menu-bar apps do not normally become the active app. Temporarily
     // adopt a regular activation policy so macOS reliably presents this dialog.

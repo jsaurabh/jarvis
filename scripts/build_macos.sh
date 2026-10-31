@@ -31,8 +31,10 @@ cp "$ASSETS_DIR/JarvisAppIcon.png" "$CONTENTS_DIR/Resources/JarvisAppIcon.png"
 cp "$ASSETS_DIR/JarvisMenuIcon.png" "$CONTENTS_DIR/Resources/JarvisMenuIcon.png"
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" SWIFT_MODULE_CACHE_PATH="$MODULE_CACHE" \
 swiftc -parse-as-library -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -O \
-  -framework AppKit -framework AVFoundation -framework Speech -framework Security -framework UserNotifications \
-  "$PROJECT_DIR/macos/Jarvis.swift" "$PROJECT_DIR/macos/RealtimeVoice.swift" -o "$CONTENTS_DIR/MacOS/Jarvis"
+  -framework AppKit -framework ApplicationServices -framework AVFoundation -framework Speech \
+  -framework Security -framework UserNotifications \
+  "$PROJECT_DIR/macos/Jarvis.swift" "$PROJECT_DIR/macos/RealtimeVoice.swift" \
+  "$PROJECT_DIR/macos/Setup.swift" -o "$CONTENTS_DIR/MacOS/Jarvis"
 cp "$PROJECT_DIR/macos/Info.plist" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :JarvisProjectPath $PROJECT_DIR" "$CONTENTS_DIR/Info.plist"
 xattr -cr "$APP_DIR"
