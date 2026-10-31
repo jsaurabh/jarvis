@@ -1,0 +1,31 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python
+/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.coverage
+htmlcov/
+
+# Jarvis runtime state. This includes conversations, traces, user-authored
+# skills, exports, session identifiers, and model artifacts.
+/data/
+/exports/
+/models/
+
+# Native build products
+/dist/
+/.build/
+
+# Editors and macOS
+.DS_Store
+.idea/
+.vscode/
+*.swp
