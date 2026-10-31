@@ -790,7 +790,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     field.placeholderString = "What would you like Jarvis to do?"
     let alert = makeJarvisAlert()
     alert.messageText = "Ask Jarvis"
-    alert.informativeText = "This uses the same durable agent as voice."
     alert.accessoryView = field
     alert.addButton(withTitle: "Send")
     alert.addButton(withTitle: "Cancel")
