@@ -30,7 +30,6 @@ training = [
 ]
 
 [project.scripts]
-jarvis-bridge = "jarvis.native_bridge:main"
 jarvis-daemon = "jarvis.daemon:main"
 jarvis-export = "jarvis.export:main"
 jarvis-flywheel = "jarvis.evals:main"

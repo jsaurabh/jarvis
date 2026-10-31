@@ -8,6 +8,32 @@ import UserNotifications
 private let keychainService = "com.cray.jarvis"
 private let keychainAccount = "openai-api-key"
 private let launchAgentLabel = "com.cray.jarvis"
+private let filesystemRootsKey = "filesystemRoots"
+
+private func normalizedFilesystemRoots(_ roots: [String]) -> [String] {
+  var seen = Set<String>()
+  return roots.compactMap { value in
+    let expanded = NSString(string: value).expandingTildeInPath
+    guard !expanded.isEmpty else { return nil }
+    let path = URL(fileURLWithPath: expanded, isDirectory: true)
+      .standardizedFileURL.resolvingSymlinksInPath().path
+    guard seen.insert(path).inserted else { return nil }
+    return path
+  }
+}
+
+private func configuredFilesystemRoots() -> [String] {
+  let stored = UserDefaults.standard.stringArray(forKey: filesystemRootsKey) ?? []
+  let normalized = normalizedFilesystemRoots(stored)
+  if !normalized.isEmpty { return normalized }
+  return [FileManager.default.homeDirectoryForCurrentUser.path]
+}
+
+private func saveFilesystemRoots(_ roots: [String]) {
+  let normalized = normalizedFilesystemRoots(roots)
+  guard !normalized.isEmpty else { return }
+  UserDefaults.standard.set(normalized, forKey: filesystemRootsKey)
+}
 
 private func jarvisIdentityImage() -> NSImage? {
   guard let url = Bundle.main.url(forResource: "JarvisAppIcon", withExtension: "png") else {
@@ -127,6 +153,7 @@ final class BackendController {
   var onEvent: (([String: Any]) -> Void)?
 
   private let apiKey: String
+  private let allowedRoots: [String]
   private let projectURL: URL
   private let queue = DispatchQueue(label: "com.cray.jarvis.core")
   private var process: Process?
@@ -136,8 +163,9 @@ final class BackendController {
   private var readBuffer = Data()
   private var pending: [String: Completion] = [:]
 
-  init(apiKey: String) {
+  init(apiKey: String, allowedRoots: [String]) {
     self.apiKey = apiKey
+    self.allowedRoots = normalizedFilesystemRoots(allowedRoots)
     self.projectURL = projectRootURL()
     queue.async { [weak self] in
       do { try self?.startIfNeeded() } catch {
@@ -257,6 +285,10 @@ final class BackendController {
     request("trace-viewer", payload: [:], completion: completion)
   }
 
+  func updateFilesystemRoots(_ roots: [String], completion: @escaping Completion) {
+    request("filesystem-scope", payload: ["roots": roots], completion: completion)
+  }
+
   func recordRealtimeTurn(
     userText: String,
     assistantText: String,
@@ -328,7 +360,7 @@ final class BackendController {
     process.standardError = errors
     var environment = ProcessInfo.processInfo.environment
     environment["OPENAI_API_KEY"] = apiKey
-    environment["JARVIS_ALLOWED_ROOTS"] = "/"
+    environment["JARVIS_ALLOWED_ROOTS"] = allowedRoots.joined(separator: ":")
     environment["JARVIS_DB_PATH"] = projectURL.appendingPathComponent("data/jarvis.db").path
     environment["PYTHONUNBUFFERED"] = "1"
     process.environment = environment
@@ -597,6 +629,10 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   private lazy var setupController = SetupController(
     changeAPIKey: { [weak self] completion in self?.changeAPIKey(completion: completion) },
     enableVoice: { [weak self] completion in self?.requestSpeechAccess(completion: completion) },
+    filesystemRoots: { configuredFilesystemRoots() },
+    changeFilesystemRoots: { [weak self] roots, completion in
+      self?.changeFilesystemRoots(roots, completion: completion)
+    },
     onComplete: { [weak self] in self?.completeSetup() }
   )
 
@@ -644,7 +680,9 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     // Launch as a normal foreground app so first-run dialogs are guaranteed to
     // appear, then become a Dock-less menu-bar app once setup is complete.
     NSApp.setActivationPolicy(.accessory)
-    if !UserDefaults.standard.bool(forKey: "didCompleteSetup") {
+    if !UserDefaults.standard.bool(forKey: "didCompleteSetup")
+      || !UserDefaults.standard.bool(forKey: "didConfigureFilesystemScope")
+    {
       DispatchQueue.main.async { [weak self] in self?.showSetup() }
     } else if listeningEnabled {
       NSLog("Jarvis startup: requesting microphone access for live voice")
@@ -754,8 +792,35 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     completion(true)
   }
 
+  private func changeFilesystemRoots(
+    _ roots: [String], completion: @escaping (Bool) -> Void
+  ) {
+    let normalized = normalizedFilesystemRoots(roots)
+    guard !normalized.isEmpty else {
+      completion(false)
+      return
+    }
+    saveFilesystemRoots(normalized)
+    guard let backend else {
+      completion(true)
+      return
+    }
+    backend.updateFilesystemRoots(normalized) { [weak self] result in
+      switch result {
+      case .success:
+        UserDefaults.standard.set(true, forKey: "didConfigureFilesystemScope")
+        completion(true)
+      case .failure(let error):
+        self?.showError(error.localizedDescription)
+        completion(false)
+      }
+    }
+  }
+
   private func completeSetup() {
     UserDefaults.standard.set(true, forKey: "didCompleteSetup")
+    saveFilesystemRoots(configuredFilesystemRoots())
+    UserDefaults.standard.set(true, forKey: "didConfigureFilesystemScope")
     if listeningEnabled,
       AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     {
@@ -1174,7 +1239,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   }
 
   private func configureBackend(apiKey: String) {
-    let controller = BackendController(apiKey: apiKey)
+    let controller = BackendController(apiKey: apiKey, allowedRoots: configuredFilesystemRoots())
     controller.onEvent = { [weak self] event in
       guard let self else { return }
       let status = event["status"] as? String ?? ""

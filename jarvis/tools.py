@@ -13,6 +13,18 @@ from .security import AccessDenied, prompt_injection_warning, redact_text, resol
 FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
+        "name": "list_filesystem_roots",
+        "description": "List the local folders and mounted volumes Jarvis is authorized to access.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "list_directory",
         "description": "List files and folders in an allowed local or mounted directory.",
         "parameters": {
@@ -131,6 +143,7 @@ class ToolExecutor:
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         handlers = {
+            "list_filesystem_roots": self._list_filesystem_roots,
             "list_directory": self._list_directory,
             "read_file": self._read_file,
             "search_files": self._search_files,
@@ -155,6 +168,9 @@ class ToolExecutor:
             return {"ok": True, "result": result}
         except (OSError, UnicodeError, AccessDenied, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
+
+    async def _list_filesystem_roots(self) -> dict[str, Any]:
+        return {"roots": [str(root) for root in self.settings.allowed_roots]}
 
     async def _list_directory(self, path: str, limit: int) -> dict[str, Any]:
         target = resolve_allowed(path, self.settings.allowed_roots)

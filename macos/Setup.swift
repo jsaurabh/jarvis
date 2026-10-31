@@ -8,6 +8,8 @@ final class SetupController: NSObject, NSWindowDelegate {
 
   private let changeAPIKey: (@escaping PermissionCompletion) -> Void
   private let enableVoice: (@escaping PermissionCompletion) -> Void
+  private let filesystemRoots: () -> [String]
+  private let changeFilesystemRoots: ([String], @escaping PermissionCompletion) -> Void
   private let onComplete: () -> Void
 
   private var window: NSWindow?
@@ -16,14 +18,19 @@ final class SetupController: NSObject, NSWindowDelegate {
   private weak var voiceStatus: NSTextField?
   private weak var notificationStatus: NSTextField?
   private weak var accessibilityStatus: NSTextField?
+  private weak var filesystemStatus: NSTextField?
 
   init(
     changeAPIKey: @escaping (@escaping PermissionCompletion) -> Void,
     enableVoice: @escaping (@escaping PermissionCompletion) -> Void,
+    filesystemRoots: @escaping () -> [String],
+    changeFilesystemRoots: @escaping ([String], @escaping PermissionCompletion) -> Void,
     onComplete: @escaping () -> Void
   ) {
     self.changeAPIKey = changeAPIKey
     self.enableVoice = enableVoice
+    self.filesystemRoots = filesystemRoots
+    self.changeFilesystemRoots = changeFilesystemRoots
     self.onComplete = onComplete
   }
 
@@ -37,7 +44,7 @@ final class SetupController: NSObject, NSWindowDelegate {
 
     completionSent = false
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 620, height: 650),
+      contentRect: NSRect(x: 0, y: 0, width: 620, height: 710),
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false
@@ -120,10 +127,14 @@ final class SetupController: NSObject, NSWindowDelegate {
         action: #selector(reviewAccessibility)
       ))
 
+    let filesystemStatus = statusLabel(filesystemPermissionText())
+    self.filesystemStatus = filesystemStatus
+    stack.addArrangedSubview(filesystemRow(detail: filesystemStatus))
+
     stack.addArrangedSubview(
       row(
-        title: "Files and folders",
-        detail: statusLabel("Use Full Disk Access for protected locations"),
+        title: "Protected files",
+        detail: statusLabel("Full Disk Access is optional and remains controlled by macOS"),
         buttonTitle: "Open Settings…",
         action: #selector(openFullDiskAccess)
       ))
@@ -207,6 +218,32 @@ final class SetupController: NSObject, NSWindowDelegate {
     return row
   }
 
+  private func filesystemRow(detail: NSTextField) -> NSView {
+    let titleLabel = NSTextField(labelWithString: "Files and folders")
+    titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+    let labels = NSStackView(views: [titleLabel, detail])
+    labels.orientation = .vertical
+    labels.alignment = .leading
+    labels.spacing = 2
+
+    let add = NSButton(title: "Add…", target: self, action: #selector(addFilesystemRoot))
+    add.bezelStyle = .rounded
+    let remove = NSButton(
+      title: "Remove…", target: self, action: #selector(removeFilesystemRoot))
+    remove.bezelStyle = .rounded
+    let buttons = NSStackView(views: [add, remove])
+    buttons.orientation = .horizontal
+    buttons.spacing = 6
+    buttons.setContentHuggingPriority(.required, for: .horizontal)
+
+    let row = NSStackView(views: [labels, buttons])
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.distribution = .fill
+    row.spacing = 16
+    return row
+  }
+
   private func statusLabel(_ text: String) -> NSTextField {
     let label = NSTextField(labelWithString: text)
     label.textColor = .secondaryLabelColor
@@ -219,7 +256,16 @@ final class SetupController: NSObject, NSWindowDelegate {
     voiceStatus?.stringValue = voicePermissionText()
     accessibilityStatus?.stringValue =
       AXIsProcessTrusted() ? "Allowed" : "Needed to control other applications"
+    filesystemStatus?.stringValue = filesystemPermissionText()
     refreshNotificationStatus()
+  }
+
+  private func filesystemPermissionText() -> String {
+    let roots = filesystemRoots()
+    if roots == ["/"] { return "Entire Mac, subject to macOS permissions" }
+    let abbreviated = roots.map { NSString(string: $0).abbreviatingWithTildeInPath }
+    if abbreviated.count <= 2 { return abbreviated.joined(separator: ", ") }
+    return "\(abbreviated.count) authorized locations"
   }
 
   private func voicePermissionText() -> String {
@@ -273,6 +319,52 @@ final class SetupController: NSObject, NSWindowDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
       self?.accessibilityStatus?.stringValue =
         AXIsProcessTrusted() ? "Allowed" : "Review in System Settings"
+    }
+  }
+
+  @objc private func addFilesystemRoot() {
+    let panel = NSOpenPanel()
+    panel.title = "Choose folders or volumes Jarvis may access"
+    panel.message =
+      "Jarvis will only read or modify files inside the locations listed in Setup. macOS permissions still apply."
+    panel.prompt = "Add Access"
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = true
+    panel.canCreateDirectories = false
+    panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+    guard panel.runModal() == .OK else { return }
+    let roots = filesystemRoots() + panel.urls.map(\.path)
+    applyFilesystemRoots(roots)
+  }
+
+  @objc private func removeFilesystemRoot() {
+    let roots = filesystemRoots()
+    guard !roots.isEmpty else { return }
+    let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+    picker.addItems(
+      withTitles: roots.map { NSString(string: $0).abbreviatingWithTildeInPath })
+    let alert = NSAlert()
+    alert.icon = NSApp.applicationIconImage
+    alert.messageText = "Remove file access"
+    alert.informativeText =
+      roots.count == 1
+      ? "Jarvis must retain at least one authorized location. Removing this location will restore access to your Home folder."
+      : "Choose the location Jarvis should no longer access."
+    alert.accessoryView = picker
+    alert.addButton(withTitle: "Remove Access")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    var updated = roots
+    updated.remove(at: picker.indexOfSelectedItem)
+    if updated.isEmpty { updated = [FileManager.default.homeDirectoryForCurrentUser.path] }
+    applyFilesystemRoots(updated)
+  }
+
+  private func applyFilesystemRoots(_ roots: [String]) {
+    changeFilesystemRoots(roots) { [weak self] changed in
+      guard changed else { return }
+      self?.filesystemStatus?.stringValue = self?.filesystemPermissionText() ?? "Updated"
     }
   }
 

@@ -146,6 +146,16 @@ class JsonLineDaemon:
                     "message": "Local Phoenix trace viewer is ready.",
                     "url": self.phoenix.url,
                 }
+            elif action == "filesystem-scope":
+                roots = payload.get("roots")
+                if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
+                    raise ValueError("Filesystem roots must be a list of folder paths")
+                configured = settings.set_allowed_roots(roots)
+                result = {
+                    "status": "completed",
+                    "message": "Filesystem access updated.",
+                    "roots": [str(root) for root in configured],
+                }
             elif action == "ping":
                 result = {"status": "completed", "message": "Jarvis Core is ready."}
             elif action == "shutdown":

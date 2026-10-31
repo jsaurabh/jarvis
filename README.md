@@ -8,7 +8,7 @@ This repository is the first public release. It is useful today, but its interfa
 
 - Hold low-latency voice conversations with streaming speech and interruption support.
 - Continue the same work through native text chat.
-- Read files across local disks and mounted network volumes.
+- Read files inside user-authorized folders, local disks, and mounted network volumes.
 - Work with applications, Calendar, the clipboard, URLs, and local commands.
 - Remember user-approved facts, create reminders, and run scheduled agent tasks.
 - Pause sensitive actions for explicit approval.
@@ -68,9 +68,9 @@ Without `uv`, create a virtual environment and install the project with:
 python -m pip install -e '.[dev]'
 ```
 
-On first launch, **Setup Jarvis** guides you through the OpenAI API key and macOS permissions. The key is stored in macOS Keychain. Microphone, notifications, Accessibility, protected files, Calendar, application automation, and login behavior remain under macOS control.
+On first launch, **Setup Jarvis** guides you through the OpenAI API key, authorized filesystem locations, and macOS permissions. The key is stored in macOS Keychain. Jarvis defaults to the user's Home folder; additional folders or mounted volumes must be added explicitly. Microphone, notifications, Accessibility, protected files, Calendar, application automation, and login behavior remain under macOS control.
 
-Open **Setup Jarvis…** from the menu at any time to replace the API key, request a permission again, or jump to the relevant System Settings page.
+Open **Setup Jarvis…** from the menu at any time to add or revoke filesystem locations, replace the API key, request a permission again, or jump to the relevant System Settings page. Filesystem scope is saved across restarts and changes take effect immediately in the running agent.
 
 To install the built application in the standard Applications folder:
 
@@ -103,7 +103,7 @@ When **Listening** is on, microphone audio is streamed to the configured OpenAI 
 
 ## Permissions and safety
 
-Jarvis can read from the filesystem roots available to its process, including mounted volumes under `/Volumes`. macOS privacy controls continue to protect restricted locations and applications.
+Jarvis can read only within the folders and volumes listed in **Setup Jarvis**. The local executor resolves paths and symlinks against those roots again at execution time. To use a mounted disk or network share under `/Volumes`, add that volume or one of its folders in Setup. macOS privacy controls continue to protect restricted locations and applications.
 
 Read-only file access does not require an approval. Actions with side effects do. Jarvis asks before it:
 

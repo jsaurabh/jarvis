@@ -20,8 +20,8 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from .agent import AGENT_INSTRUCTIONS
 from .config import Settings
+from .instructions import AGENT_INSTRUCTIONS
 from .learning import harness_snapshot as build_harness_snapshot
 from .observability import LocalObservability
 from .reminders import ReminderStore
@@ -132,6 +132,11 @@ class SDKJarvisAgent:
     def _local_tools(self) -> list[Any]:
         executor = self.executor
 
+        @function_tool(name_override="list_filesystem_roots")
+        async def list_filesystem_roots() -> dict[str, Any]:
+            """List the local folders and volumes Jarvis is authorized to access."""
+            return await executor.execute("list_filesystem_roots", {})
+
         @function_tool(name_override="list_directory")
         async def list_directory(path: str, limit: int) -> dict[str, Any]:
             """List files and folders in an authorized local or mounted directory."""
@@ -241,6 +246,7 @@ class SDKJarvisAgent:
             )
 
         tools = [
+            list_filesystem_roots,
             list_directory,
             read_file,
             search_files,

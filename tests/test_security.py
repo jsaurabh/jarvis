@@ -10,6 +10,7 @@ from jarvis.security import (
     redact_text,
     resolve_allowed,
 )
+from jarvis.tools import ToolExecutor
 
 
 def test_resolve_allowed_blocks_escape(tmp_path: Path) -> None:
@@ -31,6 +32,39 @@ def test_colon_separated_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("JARVIS_ALLOWED_ROOTS", f"{first}:{second}")
     configured = Settings(_env_file=None)
     assert configured.allowed_roots == (first.resolve(), second.resolve())
+
+
+def test_settings_require_an_authorized_root() -> None:
+    with pytest.raises(ValueError, match="at least one folder"):
+        Settings(_env_file=None, jarvis_allowed_roots=[])
+
+
+@pytest.mark.asyncio
+async def test_updated_scope_is_enforced_at_tool_execution(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "one.txt").write_text("one")
+    (second / "two.txt").write_text("two")
+    configured = Settings(_env_file=None, jarvis_allowed_roots=[first])
+    executor = ToolExecutor(configured)
+
+    listed = await executor.execute("list_filesystem_roots", {})
+    assert listed == {"ok": True, "result": {"roots": [str(first.resolve())]}}
+
+    allowed = await executor.execute(
+        "read_file", {"path": str(first / "one.txt"), "offset": 0, "max_chars": 100}
+    )
+    assert allowed["ok"] is True
+
+    configured.set_allowed_roots([second])
+    denied = await executor.execute(
+        "read_file", {"path": str(first / "one.txt"), "offset": 0, "max_chars": 100}
+    )
+    assert denied["ok"] is False
+    assert "outside configured roots" in denied["error"]
+    assert resolve_allowed(second / "two.txt", configured.allowed_roots) == second / "two.txt"
 
 
 def test_prompt_injection_is_flagged_as_untrusted() -> None:

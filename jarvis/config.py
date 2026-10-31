@@ -33,6 +33,18 @@ class Settings(BaseSettings):
             return [Path(item).expanduser() for item in value.split(os.pathsep) if item]
         return value
 
+    @field_validator("jarvis_allowed_roots")
+    @classmethod
+    def valid_allowed_roots(cls, value: list[Path]) -> list[Path]:
+        roots: list[Path] = []
+        for path in value:
+            resolved = path.expanduser().resolve()
+            if resolved not in roots:
+                roots.append(resolved)
+        if not roots:
+            raise ValueError("JARVIS_ALLOWED_ROOTS must contain at least one folder")
+        return roots
+
     @field_validator("jarvis_trace_mode")
     @classmethod
     def valid_trace_mode(cls, value: str) -> str:
@@ -49,7 +61,11 @@ class Settings(BaseSettings):
 
     @property
     def allowed_roots(self) -> tuple[Path, ...]:
-        return tuple(path.expanduser().resolve() for path in self.jarvis_allowed_roots)
+        return tuple(self.jarvis_allowed_roots)
+
+    def set_allowed_roots(self, roots: list[str | Path]) -> tuple[Path, ...]:
+        self.jarvis_allowed_roots = self.valid_allowed_roots([Path(root) for root in roots])
+        return self.allowed_roots
 
 
 settings = Settings()
