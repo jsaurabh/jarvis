@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     jarvis_trace_mode: str = "full"
     jarvis_phoenix_port: int = 6006
     jarvis_db_path: Path = Path("./data/jarvis.db")
-    jarvis_max_tool_steps: int = 12
     jarvis_tool_output_limit: int = 40_000
     jarvis_skills_path: Path = Path("./data/skills")
 

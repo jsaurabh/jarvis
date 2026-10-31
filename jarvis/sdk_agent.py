@@ -122,7 +122,7 @@ class SDKJarvisAgent:
             model_settings={
                 "parallel_tool_calls": False,
                 "store": True,
-                "max_turns": self.settings.jarvis_max_tool_steps,
+                "max_turns": None,
                 "base_url": bool(self.settings.jarvis_base_url),
             },
             skills=skills,
@@ -350,7 +350,7 @@ class SDKJarvisAgent:
                 self.agent,
                 text,
                 session=self._session(session_id),
-                max_turns=self.settings.jarvis_max_tool_steps,
+                max_turns=None,
                 run_config=self._run_config(session_id, run_context),
             )
         return self._turn_from_result(result)
@@ -375,7 +375,7 @@ class SDKJarvisAgent:
                 self.agent,
                 state,
                 session=self._session(session_id),
-                max_turns=self.settings.jarvis_max_tool_steps,
+                max_turns=None,
                 run_config=self._run_config(session_id, run_context),
             )
         return self._turn_from_result(result)

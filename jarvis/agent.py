@@ -60,7 +60,7 @@ class JarvisAgent:
         )
         try:
             response = await self._request(text, session.get("last_response_id"))
-            return await self._drive(session_id, run_id, response, 0)
+            return await self._drive(session_id, run_id, response)
         except Exception as exc:
             self.store.fail_run(run_id, str(exc))
             raise
@@ -93,7 +93,7 @@ class JarvisAgent:
                 ],
                 approval["response_id"],
             )
-            return await self._drive(approval["session_id"], approval["run_id"], response, 1)
+            return await self._drive(approval["session_id"], approval["run_id"], response)
         except Exception as exc:
             self.store.fail_run(approval["run_id"], str(exc))
             raise
@@ -112,9 +112,7 @@ class JarvisAgent:
             kwargs["previous_response_id"] = previous_response_id
         return await self.client.responses.create(**kwargs)
 
-    async def _drive(
-        self, session_id: str, run_id: str, response: Any, step: int
-    ) -> dict[str, Any]:
+    async def _drive(self, session_id: str, run_id: str, response: Any) -> dict[str, Any]:
         while True:
             self.store.event(run_id, "model_output", self._dump_response(response))
             self.store.update_response_id(session_id, response.id)
@@ -125,11 +123,6 @@ class JarvisAgent:
                 text = response.output_text or "I completed the turn without a text response."
                 self.store.finish_run(run_id, text, response.id)
                 return {"status": "completed", "run_id": run_id, "message": text}
-            if step >= self.settings.jarvis_max_tool_steps:
-                message = f"I stopped after {step} tool steps to prevent an unbounded run."
-                self.store.finish_run(run_id, message, response.id)
-                return {"status": "completed", "run_id": run_id, "message": message}
-
             call = calls[0]
             try:
                 arguments = json.loads(call.arguments)
@@ -146,7 +139,6 @@ class JarvisAgent:
                     ],
                     response.id,
                 )
-                step += 1
                 continue
 
             self.store.event(
@@ -181,7 +173,6 @@ class JarvisAgent:
                 ],
                 response.id,
             )
-            step += 1
 
     @staticmethod
     def _dump_response(response: Any) -> dict[str, Any]:
