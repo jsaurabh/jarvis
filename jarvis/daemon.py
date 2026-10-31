@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import settings
 from .core import JarvisCore
+from .observability import PhoenixServer
 from .store import TraceStore
 
 SESSION_FILE = Path(os.environ.get("JARVIS_SESSION_FILE", "data/native-session-id"))
@@ -33,6 +34,12 @@ class JsonLineDaemon:
         self.store = TraceStore(settings.jarvis_db_path, settings.jarvis_trace_mode)
         self.session_id = native_session(self.store)
         self._write_lock = asyncio.Lock()
+        self.phoenix = PhoenixServer(
+            settings.jarvis_db_path.parent / "phoenix.db",
+            settings.jarvis_phoenix_port,
+        )
+        if settings.jarvis_trace_mode != "off":
+            self.phoenix.start()
         self.core = JarvisCore(settings, store=self.store, event_sink=self.emit)
         self._requests: set[asyncio.Task[None]] = set()
 
@@ -130,6 +137,15 @@ class JsonLineDaemon:
                 result = self.core.list_skills()
             elif action == "quality":
                 result = self.core.quality_report()
+            elif action == "trace-viewer":
+                if settings.jarvis_trace_mode == "off":
+                    raise ValueError("Local tracing is disabled")
+                await asyncio.to_thread(self.phoenix.start)
+                result = {
+                    "status": "completed",
+                    "message": "Local Phoenix trace viewer is ready.",
+                    "url": self.phoenix.url,
+                }
             elif action == "ping":
                 result = {"status": "completed", "message": "Jarvis Core is ready."}
             elif action == "shutdown":
@@ -146,6 +162,12 @@ class JsonLineDaemon:
         await self.send({"id": request_id, "type": "response", "result": result})
 
     async def serve(self) -> None:
+        try:
+            await self._serve()
+        finally:
+            self.phoenix.stop()
+
+    async def _serve(self) -> None:
         await self.core.start()
         await self.emit({"status": "ready", "message": "Jarvis Core is ready."})
         while True:

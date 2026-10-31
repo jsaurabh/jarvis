@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     jarvis_enable_commands: bool = True
     jarvis_enable_web_search: bool = True
     jarvis_trace_mode: str = "full"
-    jarvis_openai_trace_content: bool = False
+    jarvis_phoenix_port: int = 6006
     jarvis_db_path: Path = Path("./data/jarvis.db")
     jarvis_max_tool_steps: int = 12
     jarvis_tool_output_limit: int = 40_000
@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     def valid_trace_mode(cls, value: str) -> str:
         if value not in {"full", "metadata", "off"}:
             raise ValueError("JARVIS_TRACE_MODE must be full, metadata, or off")
+        return value
+
+    @field_validator("jarvis_phoenix_port")
+    @classmethod
+    def valid_phoenix_port(cls, value: int) -> int:
+        if not 1024 <= value <= 65535:
+            raise ValueError("JARVIS_PHOENIX_PORT must be between 1024 and 65535")
         return value
 
     @property

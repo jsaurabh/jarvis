@@ -12,10 +12,10 @@ from agents import (
     RunState,
     SQLiteSession,
     WebSearchTool,
-    add_trace_processor,
     function_tool,
     set_default_openai_api,
     set_default_openai_client,
+    set_trace_processors,
     set_tracing_disabled,
 )
 from openai import AsyncOpenAI
@@ -23,11 +23,10 @@ from openai import AsyncOpenAI
 from .agent import AGENT_INSTRUCTIONS
 from .config import Settings
 from .learning import harness_snapshot as build_harness_snapshot
+from .observability import LocalObservability
 from .reminders import ReminderStore
 from .security import redact
 from .skills import SkillStore
-from .store import TraceStore
-from .telemetry import LocalTelemetryProcessor
 from .tools import ToolExecutor
 
 
@@ -63,7 +62,6 @@ class SDKJarvisAgent:
         executor: ToolExecutor,
         reminders: ReminderStore | None = None,
         skills: SkillStore | None = None,
-        store: TraceStore | None = None,
     ) -> None:
         self.settings = settings
         self.executor = executor
@@ -75,17 +73,12 @@ class SDKJarvisAgent:
         client_args: dict[str, Any] = {"api_key": api_key}
         if settings.jarvis_base_url:
             client_args["base_url"] = settings.jarvis_base_url
-        set_default_openai_client(
-            AsyncOpenAI(**client_args),
-            use_for_tracing=settings.jarvis_base_url is None
-            and settings.jarvis_trace_mode != "off",
-        )
+        set_default_openai_client(AsyncOpenAI(**client_args), use_for_tracing=False)
         set_default_openai_api("responses")
-        set_tracing_disabled(
-            settings.jarvis_trace_mode == "off" or settings.jarvis_base_url is not None
-        )
-        if store is not None and settings.jarvis_trace_mode != "off":
-            add_trace_processor(LocalTelemetryProcessor(store))
+        set_tracing_disabled(settings.jarvis_trace_mode == "off")
+        if settings.jarvis_trace_mode == "off":
+            set_trace_processors([])
+        self.observability = LocalObservability(settings)
 
         tools: list[Any] = self._local_tools()
         if settings.jarvis_enable_web_search:
@@ -343,7 +336,7 @@ class SDKJarvisAgent:
             workflow_name="Jarvis agent task",
             group_id=session_id,
             trace_metadata=metadata,
-            trace_include_sensitive_data=self.settings.jarvis_openai_trace_content,
+            trace_include_sensitive_data=self.settings.jarvis_trace_mode == "full",
         )
 
     async def chat(
@@ -352,13 +345,14 @@ class SDKJarvisAgent:
         text: str,
         run_context: dict[str, Any] | None = None,
     ) -> SDKTurn:
-        result = await Runner.run(
-            self.agent,
-            text,
-            session=self._session(session_id),
-            max_turns=self.settings.jarvis_max_tool_steps,
-            run_config=self._run_config(session_id, run_context),
-        )
+        with self.observability.attributes(session_id, run_context):
+            result = await Runner.run(
+                self.agent,
+                text,
+                session=self._session(session_id),
+                max_turns=self.settings.jarvis_max_tool_steps,
+                run_config=self._run_config(session_id, run_context),
+            )
         return self._turn_from_result(result)
 
     async def resume(
@@ -376,14 +370,18 @@ class SDKJarvisAgent:
             state.approve(interruptions[0])
         else:
             state.reject(interruptions[0], rejection_message="The user denied this action.")
-        result = await Runner.run(
-            self.agent,
-            state,
-            session=self._session(session_id),
-            max_turns=self.settings.jarvis_max_tool_steps,
-            run_config=self._run_config(session_id, run_context),
-        )
+        with self.observability.attributes(session_id, run_context):
+            result = await Runner.run(
+                self.agent,
+                state,
+                session=self._session(session_id),
+                max_turns=self.settings.jarvis_max_tool_steps,
+                run_config=self._run_config(session_id, run_context),
+            )
         return self._turn_from_result(result)
+
+    def close(self) -> None:
+        self.observability.close()
 
     def _turn_from_result(self, result: Any) -> SDKTurn:
         trace = {

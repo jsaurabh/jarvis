@@ -42,7 +42,6 @@ class JarvisCore:
             ToolExecutor(settings),
             reminders=self.reminders,
             skills=self.skills,
-            store=self.store,
         )
         self.event_sink = event_sink
         self._active: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -71,6 +70,9 @@ class JarvisCore:
             self._automation_task.cancel()
             await asyncio.gather(self._automation_task, return_exceptions=True)
         self._automation_task = None
+        close_agent = getattr(self.agent, "close", None)
+        if callable(close_agent):
+            close_agent()
 
     def remember(self, content: str, kind: str = "fact", scope: str = "global") -> dict[str, Any]:
         memory = self.memory.remember(content, kind=kind, scope=scope)
@@ -203,7 +205,6 @@ class JarvisCore:
 
     def quality_report(self) -> dict[str, Any]:
         metrics = self.store.quality_metrics()
-        metrics["telemetry"] = self.store.telemetry_metrics()
         return {
             "status": "completed",
             "message": "Jarvis quality metrics are ready.",
@@ -236,7 +237,7 @@ class JarvisCore:
 
         async def resume() -> dict[str, Any]:
             try:
-                run_context = self._telemetry_context(
+                run_context = self._observability_context(
                     run_id,
                     task_id,
                     self.store.run_context(run_id) or {},
@@ -406,7 +407,7 @@ class JarvisCore:
             self.store.event(run_id, "restart_recovery", {"task_id": task_id})
         await self._emit(task_id, "running", "Working")
         try:
-            run_context = self._telemetry_context(run_id, task_id, context)
+            run_context = self._observability_context(run_id, task_id, context)
             if callable(getattr(self.agent, "accepts_run_context", None)):
                 turn = await self.agent.chat(
                     task["session_id"], task["request"], run_context=run_context
@@ -436,7 +437,9 @@ class JarvisCore:
             raise
 
     @staticmethod
-    def _telemetry_context(run_id: str, task_id: str, harness: dict[str, Any]) -> dict[str, Any]:
+    def _observability_context(
+        run_id: str, task_id: str, harness: dict[str, Any]
+    ) -> dict[str, Any]:
         return {
             "run_id": run_id,
             "task_id": task_id,

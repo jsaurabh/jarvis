@@ -125,15 +125,6 @@ def test_correction_creates_preference_and_harness_bundle(tmp_path: Path) -> Non
     run = store.create_run(session, "What is two plus two?", "test-model")
     store.finish_run(run, "Five")
     store.feedback(run, -1, "Four")
-    store.record_telemetry(
-        {
-            "object": "trace.span",
-            "id": "span-bundle",
-            "trace_id": "trace-bundle",
-            "span_data": {"type": "generation", "name": "model"},
-        },
-        run,
-    )
 
     output = tmp_path / "preference.jsonl"
     train, evaluation, _ = export_dataset(store, output, "preference", 0)
@@ -144,6 +135,4 @@ def test_correction_creates_preference_and_harness_bundle(tmp_path: Path) -> Non
 
     summary = build_improvement_bundle(store, tmp_path / "bundle")
     assert summary["regression_cases"] == 1
-    assert summary["telemetry_records"] == 1
-    assert (tmp_path / "bundle" / "sdk-telemetry.jsonl").exists()
     assert (tmp_path / "bundle" / "codex-handoff.md").exists()

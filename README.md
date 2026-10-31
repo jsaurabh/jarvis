@@ -36,7 +36,9 @@ The menu-bar app handles audio, native controls, notifications, and macOS permis
 
 OpenAI Realtime provides streaming speech. The OpenAI Agents SDK drives model and tool execution. Agent state, approvals, feedback, and observable execution traces are stored locally in SQLite.
 
-Each Agents SDK trace is correlated with its Jarvis run, task, session, interface, and harness version. Completed SDK spans are mirrored into the local database for latency and tool/model-call analysis. The SDK also sends redacted traces to the OpenAI trace dashboard; set `JARVIS_OPENAI_TRACE_CONTENT=true` only if you intentionally want model and tool inputs and outputs included there.
+Jarvis instruments the Agents SDK with OpenInference, exports OpenTelemetry spans over OTLP/HTTP, and runs a self-hosted Arize Phoenix collector and viewer on `127.0.0.1:6006`. The OpenInference instrumentor replaces the Agents SDK's default trace processor, so agent traces are not sent to OpenAI's hosted trace service. Phoenix is started with both internet access and its own product telemetry disabled.
+
+**View Recent Activity…** opens the local Phoenix trace viewer. Trace spans carry the Jarvis session, run, task, interface, and harness version as correlation metadata.
 
 ## Requirements
 
@@ -125,6 +127,8 @@ Saved memories are not automatically inserted into model prompts. Raw microphone
 
 Deleting `data/jarvis.db` removes local Jarvis history, memories, reminders, automations, feedback, and task state. Back it up first if you want to preserve that data.
 
+Phoenix stores its local OpenTelemetry history separately in `data/phoenix.db`. Removing that file clears the trace viewer without deleting Jarvis tasks, memories, feedback, or curated training records.
+
 ## Training-data flywheel
 
 Jarvis records each agent run as a structured trajectory containing the observable request, model messages, tool calls, tool results, approvals, final answer, timing, scores, feedback, and a snapshot of the harness that produced it.
@@ -158,14 +162,7 @@ jarvis-flywheel bundle --bundle-dir exports/flywheel
 jarvis-flywheel export --output exports/jarvis-trajectories.jsonl
 ```
 
-Flywheel bundles include correlated SDK telemetry for the selected reviewable runs, with sensitive-pattern filtering applied independently to both trajectories and telemetry records.
-
-Inspect or export the lower-level SDK telemetry with:
-
-```bash
-jarvis-telemetry report
-jarvis-telemetry export --output exports/jarvis-telemetry.jsonl
-```
+Use the local Phoenix viewer for low-level OpenInference spans, latency, model calls, tool calls, and trace inspection. Use Jarvis's reviewed JSONL exports for fine-tuning datasets and deterministic evaluation splits.
 
 Optional LoRA training is available through the `training` dependency group:
 

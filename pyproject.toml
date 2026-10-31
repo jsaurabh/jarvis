@@ -8,6 +8,10 @@ requires-python = ">=3.11"
 dependencies = [
   "openai>=3.0,<4",
   "openai-agents>=0.24,<1",
+  "openinference-instrumentation-openai-agents>=2.6,<3",
+  "opentelemetry-exporter-otlp-proto-http>=1.38,<2",
+  "opentelemetry-sdk>=1.38,<2",
+  "arize-phoenix>=20.9,<21",
   "pydantic-settings>=2.6,<3",
 ]
 
@@ -30,7 +34,6 @@ jarvis-bridge = "jarvis.native_bridge:main"
 jarvis-daemon = "jarvis.daemon:main"
 jarvis-export = "jarvis.export:main"
 jarvis-flywheel = "jarvis.evals:main"
-jarvis-telemetry = "jarvis.telemetry:main"
 jarvis-train = "jarvis.train:main"
 
 [build-system]

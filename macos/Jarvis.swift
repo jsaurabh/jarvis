@@ -253,6 +253,10 @@ final class BackendController {
     request("quality", payload: [:], completion: completion)
   }
 
+  func traceViewer(completion: @escaping Completion) {
+    request("trace-viewer", payload: [:], completion: completion)
+  }
+
   func recordRealtimeTurn(
     userText: String,
     assistantText: String,
@@ -672,7 +676,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     reviewApprovalItem.isHidden = true
     menu.addItem(reviewApprovalItem)
     let activityItem = NSMenuItem(
-      title: "View Recent Activity…", action: #selector(openTraceDashboard), keyEquivalent: "")
+      title: "View Recent Activity…", action: #selector(openTraceViewer), keyEquivalent: "")
     activityItem.target = self
     menu.addItem(activityItem)
     rateResultItem = NSMenuItem(
@@ -884,9 +888,19 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     }
   }
 
-  @objc private func openTraceDashboard() {
-    guard let url = URL(string: "https://platform.openai.com/logs?api=traces") else { return }
-    NSWorkspace.shared.open(url)
+  @objc private func openTraceViewer() {
+    guard let backend else { return }
+    backend.traceViewer { [weak self] result in
+      switch result {
+      case .failure(let error): self?.showError(error.localizedDescription)
+      case .success(let response):
+        guard let value = response.details["url"] as? String, let url = URL(string: value) else {
+          self?.showError("The local trace viewer URL is unavailable.")
+          return
+        }
+        NSWorkspace.shared.open(url)
+      }
+    }
   }
 
   @objc private func showMemories() {
@@ -1059,12 +1073,6 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
         let positive = metrics["positive"] as? Int ?? 0
         let negative = metrics["negative"] as? Int ?? 0
         let failed = metrics["failed"] as? Int ?? 0
-        let telemetry = metrics["telemetry"] as? [String: Any] ?? [:]
-        let traces = telemetry["traces"] as? Int ?? 0
-        let spans = telemetry["spans"] as? Int ?? 0
-        let modelCalls = telemetry["model_calls"] as? Int ?? 0
-        let toolCalls = telemetry["tool_calls"] as? Int ?? 0
-        let averageSpan = telemetry["average_span_ms"] as? Double ?? 0
         let alert = makeJarvisAlert()
         alert.messageText = "Jarvis Learning & Quality"
         alert.informativeText = """
@@ -1073,16 +1081,10 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
           Explicitly negative: \(negative)
           Failed runs: \(failed)
           Training-eligible examples: \(eligible)
-
-          Local SDK traces: \(traces)
-          Detailed spans: \(spans)
-          Model calls: \(modelCalls)
-          Tool calls: \(toolCalls)
-          Average span time: \(Int(averageSpan.rounded())) ms
           """
         alert.addButton(withTitle: "Done")
-        alert.addButton(withTitle: "Open Trace Dashboard")
-        if alert.runModal() == .alertSecondButtonReturn { self.openTraceDashboard() }
+        alert.addButton(withTitle: "Open Local Trace Viewer")
+        if alert.runModal() == .alertSecondButtonReturn { self.openTraceViewer() }
       }
     }
   }
