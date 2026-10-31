@@ -3,6 +3,54 @@ import AppKit
 import ApplicationServices
 import UserNotifications
 
+final class APIKeyEntryView: NSView {
+  let field = NSSecureTextField(frame: .zero)
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
+
+    field.placeholderString = "sk-…"
+    field.translatesAutoresizingMaskIntoConstraints = false
+
+    let pasteButton = NSButton(
+      title: "Paste from Clipboard",
+      target: self,
+      action: #selector(pasteFromClipboard)
+    )
+    pasteButton.bezelStyle = .rounded
+    pasteButton.translatesAutoresizingMaskIntoConstraints = false
+
+    addSubview(field)
+    addSubview(pasteButton)
+    NSLayoutConstraint.activate([
+      field.leadingAnchor.constraint(equalTo: leadingAnchor),
+      field.centerYAnchor.constraint(equalTo: centerYAnchor),
+      field.trailingAnchor.constraint(equalTo: pasteButton.leadingAnchor, constant: -8),
+      pasteButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+      pasteButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      pasteButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
+    ])
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  @objc private func pasteFromClipboard() {
+    guard
+      let value = NSPasteboard.general.string(forType: .string)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !value.isEmpty
+    else {
+      NSSound.beep()
+      return
+    }
+    field.stringValue = value
+    window?.makeFirstResponder(field)
+  }
+}
+
 final class SetupController: NSObject, NSWindowDelegate {
   typealias PermissionCompletion = (Bool) -> Void
 

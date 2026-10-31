@@ -1401,13 +1401,12 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   }
 
   private func promptForAPIKey(cancelTitle: String = "Quit") -> String? {
-    let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-    field.placeholderString = "sk-…"
+    let entry = APIKeyEntryView()
     let alert = makeJarvisAlert()
     alert.messageText = "Connect Jarvis to OpenAI"
     alert.informativeText =
       "Enter your OpenAI API key. It will be stored in macOS Keychain, not in the project."
-    alert.accessoryView = field
+    alert.accessoryView = entry
     alert.addButton(withTitle: "Save")
     alert.addButton(withTitle: cancelTitle)
 
@@ -1425,7 +1424,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     defer { NSApp.setActivationPolicy(previousPolicy) }
 
     guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-    let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let value = entry.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty, saveAPIKey(value) else {
       showError("The API key could not be saved to Keychain.")
       return nil
