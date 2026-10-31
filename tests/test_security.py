@@ -39,6 +39,16 @@ def test_settings_require_an_authorized_root() -> None:
         Settings(_env_file=None, jarvis_allowed_roots=[])
 
 
+def test_native_commands_are_disabled_by_default(tmp_path: Path) -> None:
+    configured = Settings(_env_file=None, jarvis_allowed_roots=[tmp_path])
+    names = {definition.get("name") for definition in ToolExecutor(configured).definitions}
+    assert "run_command" not in names
+
+    configured.jarvis_enable_commands = True
+    names = {definition.get("name") for definition in ToolExecutor(configured).definitions}
+    assert "run_command" in names
+
+
 @pytest.mark.asyncio
 async def test_updated_scope_is_enforced_at_tool_execution(tmp_path: Path) -> None:
     first = tmp_path / "first"

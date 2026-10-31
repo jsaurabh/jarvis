@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         default_factory=lambda: [Path.cwd()]
     )
     jarvis_enable_writes: bool = True
-    jarvis_enable_commands: bool = True
+    jarvis_enable_commands: bool = False
     jarvis_enable_web_search: bool = True
     jarvis_trace_mode: str = "full"
     jarvis_phoenix_port: int = 6006

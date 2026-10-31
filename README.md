@@ -9,7 +9,7 @@ This repository is the first public release. It is useful today, but its interfa
 - Hold low-latency voice conversations with streaming speech and interruption support.
 - Continue the same work through native text chat.
 - Read files inside user-authorized folders, local disks, and mounted network volumes.
-- Work with applications, Calendar, the clipboard, URLs, and local commands.
+- Work with applications, Calendar, the clipboard, and URLs.
 - Remember user-approved facts, create reminders, and run scheduled agent tasks.
 - Pause sensitive actions for explicit approval.
 - Recover safe unfinished work after a restart.
@@ -105,10 +105,12 @@ When **Listening** is on, microphone audio is streamed to the configured OpenAI 
 
 Jarvis can read only within the folders and volumes listed in **Setup Jarvis**. The local executor resolves paths and symlinks against those roots again at execution time. To use a mounted disk or network share under `/Volumes`, add that volume or one of its folders in Setup. macOS privacy controls continue to protect restricted locations and applications.
 
+Native command execution is disabled by default because validating a working directory does not confine a child process to that directory. Direct daemon users can explicitly set `JARVIS_ENABLE_COMMANDS=true`, but those commands are not sandboxed and may access anything available to the Jarvis process.
+
 Read-only file access does not require an approval. Actions with side effects do. Jarvis asks before it:
 
 - writes or deletes files;
-- runs local commands;
+- runs local commands, if the unsafe developer opt-in is enabled;
 - reads the clipboard;
 - opens applications or URLs;
 - types, clicks, or sends key presses;
