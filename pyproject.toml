@@ -27,7 +27,7 @@ dev = [
 training = [
   "torch>=2.5,<3",
   "transformers>=4.50,<5",
-  "datasets>=3,<5",
+  "datasets>=3,<6",
   "peft>=0.14,<1",
   "accelerate>=1,<2",
 ]
