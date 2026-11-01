@@ -23,15 +23,14 @@ private func normalizedFilesystemRoots(_ roots: [String]) -> [String] {
 }
 
 private func configuredFilesystemRoots() -> [String] {
-  let stored = UserDefaults.standard.stringArray(forKey: filesystemRootsKey) ?? []
-  let normalized = normalizedFilesystemRoots(stored)
-  if !normalized.isEmpty { return normalized }
-  return [FileManager.default.homeDirectoryForCurrentUser.path]
+  guard let stored = UserDefaults.standard.stringArray(forKey: filesystemRootsKey) else {
+    return [FileManager.default.homeDirectoryForCurrentUser.path]
+  }
+  return normalizedFilesystemRoots(stored)
 }
 
 private func saveFilesystemRoots(_ roots: [String]) {
   let normalized = normalizedFilesystemRoots(roots)
-  guard !normalized.isEmpty else { return }
   UserDefaults.standard.set(normalized, forKey: filesystemRootsKey)
 }
 
@@ -153,7 +152,7 @@ final class BackendController {
   var onEvent: (([String: Any]) -> Void)?
 
   private let apiKey: String
-  private let allowedRoots: [String]
+  private var allowedRoots: [String]
   private let projectURL: URL
   private let queue = DispatchQueue(label: "com.cray.jarvis.core")
   private var process: Process?
@@ -162,6 +161,7 @@ final class BackendController {
   private var errorPipe: Pipe?
   private var readBuffer = Data()
   private var pending: [String: Completion] = [:]
+  private var pendingFilesystemRoots: [String: [String]] = [:]
 
   init(apiKey: String, allowedRoots: [String]) {
     self.apiKey = apiKey
@@ -285,8 +285,13 @@ final class BackendController {
     request("trace-viewer", payload: [:], completion: completion)
   }
 
+  func verifySandbox(completion: @escaping Completion) {
+    request("sandbox-selftest", payload: [:], completion: completion)
+  }
+
   func updateFilesystemRoots(_ roots: [String], completion: @escaping Completion) {
-    request("filesystem-scope", payload: ["roots": roots], completion: completion)
+    let normalized = normalizedFilesystemRoots(roots)
+    request("filesystem-scope", payload: ["roots": normalized], completion: completion)
   }
 
   func recordRealtimeTurn(
@@ -332,6 +337,9 @@ final class BackendController {
         var data = try JSONSerialization.data(withJSONObject: object)
         data.append(0x0A)
         self.pending[requestID] = completion
+        if action == "filesystem-scope", let roots = payload["roots"] as? [String] {
+          self.pendingFilesystemRoots[requestID] = roots
+        }
         guard let handle = self.inputPipe?.fileHandleForWriting else {
           throw NSError(
             domain: "Jarvis", code: 3,
@@ -340,6 +348,7 @@ final class BackendController {
         try handle.write(contentsOf: data)
       } catch {
         self.pending.removeValue(forKey: requestID)
+        self.pendingFilesystemRoots.removeValue(forKey: requestID)
         DispatchQueue.main.async { completion(.failure(error)) }
       }
     }
@@ -353,13 +362,14 @@ final class BackendController {
     let output = Pipe()
     let errors = Pipe()
     process.executableURL = python
-    process.arguments = ["-m", "jarvis.daemon"]
+    process.arguments = ["-m", "jarvis.supervisor"]
     process.currentDirectoryURL = projectURL
     process.standardInput = input
     process.standardOutput = output
     process.standardError = errors
     var environment = ProcessInfo.processInfo.environment
     environment["OPENAI_API_KEY"] = apiKey
+    environment["JARVIS_SUPERVISOR_EXPERIMENTAL"] = "1"
     environment["JARVIS_ALLOWED_ROOTS"] = allowedRoots.joined(separator: ":")
     environment["JARVIS_DB_PATH"] = projectURL.appendingPathComponent("data/jarvis.db").path
     environment["PYTHONUNBUFFERED"] = "1"
@@ -418,6 +428,11 @@ final class BackendController {
         approvalDescription: approval?["description"] as? String,
         details: result
       )
+      if let roots = pendingFilesystemRoots.removeValue(forKey: requestID),
+        response.status == "completed"
+      {
+        allowedRoots = roots
+      }
       DispatchQueue.main.async { completion(.success(response)) }
     }
   }
@@ -425,6 +440,7 @@ final class BackendController {
   private func failPending(_ message: String) {
     let callbacks = pending.values
     pending.removeAll()
+    pendingFilesystemRoots.removeAll()
     for completion in callbacks {
       let error = NSError(domain: "Jarvis", code: 4, userInfo: [NSLocalizedDescriptionKey: message])
       DispatchQueue.main.async { completion(.failure(error)) }
@@ -626,6 +642,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
   private var cachedAutomations: [[String: Any]] = []
   private var pendingApprovalID: String?
   private var pendingApprovalDescription: String?
+  private var sandboxInstall: Process?
   private lazy var setupController = SetupController(
     changeAPIKey: { [weak self] completion in self?.changeAPIKey(completion: completion) },
     enableVoice: { [weak self] completion in self?.requestSpeechAccess(completion: completion) },
@@ -633,6 +650,8 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     changeFilesystemRoots: { [weak self] roots, completion in
       self?.changeFilesystemRoots(roots, completion: completion)
     },
+    installSandbox: { [weak self] completion in self?.installSandbox(completion: completion) },
+    verifySandbox: { [weak self] completion in self?.verifySandbox(completion: completion) },
     onComplete: { [weak self] in self?.completeSetup() }
   )
 
@@ -792,22 +811,99 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     completion(true)
   }
 
+  private func installSandbox(completion: @escaping (Bool) -> Void) {
+    guard sandboxInstall?.isRunning != true else {
+      completion(false)
+      return
+    }
+    let files = FileManager.default
+    let logDirectory = files.homeDirectoryForCurrentUser.appendingPathComponent(
+      "Library/Logs/Jarvis")
+    let logURL = logDirectory.appendingPathComponent("sandbox-setup-\(UUID().uuidString).log")
+    do {
+      try files.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+      guard
+        files.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+      else {
+        throw NSError(
+          domain: "Jarvis", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Could not create the setup log."])
+      }
+      let log = try FileHandle(forWritingTo: logURL)
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+      process.arguments = [
+        "-f", projectRootURL().appendingPathComponent("scripts/setup_sandbox.sh").path,
+      ]
+      process.currentDirectoryURL = projectRootURL()
+      process.standardOutput = log
+      process.standardError = log
+      process.environment = [
+        "HOME": files.homeDirectoryForCurrentUser.path,
+        "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOMEBREW_NO_AUTO_UPDATE": "1",
+        "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+      ]
+      process.terminationHandler = { [weak self] ended in
+        try? log.close()
+        DispatchQueue.main.async {
+          self?.sandboxInstall = nil
+          let success = ended.terminationStatus == 0
+          if !success {
+            self?.showError("Isolated execution setup failed. Details: \(logURL.path)")
+          }
+          completion(success)
+        }
+      }
+      sandboxInstall = process
+      try process.run()
+    } catch {
+      sandboxInstall = nil
+      showError("Could not start isolated execution setup: \(error.localizedDescription)")
+      completion(false)
+    }
+  }
+
+  private func verifySandbox(completion: @escaping (Bool) -> Void) {
+    guard let backend else {
+      showError("Set an OpenAI API key first.")
+      completion(false)
+      return
+    }
+    backend.verifySandbox { [weak self] result in
+      switch result {
+      case .success(let response):
+        if response.status == "completed" {
+          completion(true)
+        } else {
+          self?.showError(response.message)
+          completion(false)
+        }
+      case .failure(let error):
+        self?.showError(error.localizedDescription)
+        completion(false)
+      }
+    }
+  }
+
   private func changeFilesystemRoots(
     _ roots: [String], completion: @escaping (Bool) -> Void
   ) {
     let normalized = normalizedFilesystemRoots(roots)
-    guard !normalized.isEmpty else {
-      completion(false)
-      return
-    }
-    saveFilesystemRoots(normalized)
     guard let backend else {
+      saveFilesystemRoots(normalized)
       completion(true)
       return
     }
     backend.updateFilesystemRoots(normalized) { [weak self] result in
       switch result {
-      case .success:
+      case .success(let response):
+        guard response.status == "completed" else {
+          self?.showError(response.message)
+          completion(false)
+          return
+        }
+        saveFilesystemRoots(normalized)
         UserDefaults.standard.set(true, forKey: "didConfigureFilesystemScope")
         completion(true)
       case .failure(let error):
@@ -839,7 +935,25 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     let alert = makeJarvisAlert()
     alert.alertStyle = .warning
     alert.messageText = "Jarvis needs approval"
-    alert.informativeText = pendingApprovalDescription ?? "Review the requested action."
+    alert.informativeText = "Review the full request before deciding."
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 260))
+    scroll.hasVerticalScroller = true
+    scroll.borderType = .bezelBorder
+    let details = NSTextView(frame: scroll.bounds)
+    details.isEditable = false
+    details.isSelectable = true
+    details.isRichText = false
+    details.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    details.string = pendingApprovalDescription ?? "Review the requested action."
+    details.isVerticallyResizable = true
+    details.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    details.autoresizingMask = [.width]
+    details.textContainer?.containerSize = NSSize(
+      width: 540, height: CGFloat.greatestFiniteMagnitude)
+    details.textContainer?.widthTracksTextView = true
+    scroll.documentView = details
+    alert.accessoryView = scroll
     alert.addButton(withTitle: "Approve")
     alert.addButton(withTitle: "Deny")
     alert.addButton(withTitle: "Not Now")
@@ -848,13 +962,24 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
     backend.approve(approvalID, approved: response == .alertFirstButtonReturn) {
       [weak self] result in
       guard let self else { return }
-      if case .failure(let error) = result {
+      switch result {
+      case .failure(let error):
         self.showError(error.localizedDescription)
-        return
+      case .success(let next):
+        if next.status == "approval_required", let nextID = next.approvalID {
+          self.pendingApprovalID = nextID
+          self.pendingApprovalDescription = next.approvalDescription ?? next.message
+          self.reviewApprovalItem.isHidden = false
+          self.reviewPendingApproval()
+        } else if self.pendingApprovalID == approvalID {
+          self.pendingApprovalID = nil
+          self.pendingApprovalDescription = nil
+          self.reviewApprovalItem.isHidden = true
+          if next.status == "error" || next.status == "failed" {
+            self.showError(next.message)
+          }
+        }
       }
-      self.pendingApprovalID = nil
-      self.pendingApprovalDescription = nil
-      self.reviewApprovalItem.isHidden = true
     }
   }
 
@@ -1288,7 +1413,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
           self.reviewApprovalItem.isHidden = false
           self.deliverNotification(
             title: "Jarvis needs approval",
-            message: message,
+            message: "Open Jarvis to review the full request.",
             id: "jarvis-approval-\(approvalID)"
           )
         }
@@ -1356,13 +1481,7 @@ final class JarvisApp: NSObject, NSApplicationDelegate, UNUserNotificationCenter
       }
       backend.chat(request, completion: bridgeCompletion)
     case "resolve_local_approval":
-      guard let approvalID = arguments["approval_id"] as? String,
-        let approved = arguments["approved"] as? Bool
-      else {
-        completion(["ok": false, "error": "Approval details were incomplete."])
-        return
-      }
-      backend.approve(approvalID, approved: approved, completion: bridgeCompletion)
+      completion(["ok": false, "error": "Review and approve this action in the Jarvis menu."])
     case "get_agent_status":
       backend.status(completion: bridgeCompletion)
     case "cancel_agent_task":

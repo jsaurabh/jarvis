@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -11,6 +12,7 @@ from .memory import MemoryStore
 from .reminders import ReminderStore
 from .sdk_agent import SDKJarvisAgent, SDKTurn
 from .skills import SkillStore
+from .staging import recover_orphans
 from .store import TraceStore
 from .tools import ToolExecutor
 
@@ -36,7 +38,9 @@ class JarvisCore:
         self.memory = memory or MemoryStore(settings.jarvis_db_path)
         self.reminders = reminders or ReminderStore(settings.jarvis_db_path)
         self.automations = automations or AutomationStore(settings.jarvis_db_path)
-        self.skills = skills or SkillStore(settings.jarvis_skills_path)
+        self.skills = skills or SkillStore(
+            settings.jarvis_skills_path, read_only=os.environ.get("JARVIS_CONFINED_AGENT") == "1"
+        )
         self.agent = agent or SDKJarvisAgent(
             settings,
             ToolExecutor(settings),
@@ -49,9 +53,37 @@ class JarvisCore:
         self._automation_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        if os.environ.get("JARVIS_CONFINED_AGENT") != "1":
+            await asyncio.to_thread(recover_orphans)
         for task in self.store.prepare_task_recovery():
             if task:
                 self._spawn(task["id"], recovered=True)
+        if os.environ.get("JARVIS_CONFINED_AGENT") == "1":
+            for task in self.store.list_tasks(limit=100, active_only=True):
+                if task["status"] != "awaiting_approval" or not task.get("approval_id"):
+                    continue
+                approval = self.store.get_task_approval(task["approval_id"])
+                if not approval or approval["status"] != "pending":
+                    continue
+                if approval["tool_name"] == "apply_reviewed_patch":
+                    self.store.resolve_task_approval(approval["id"], False)
+                    message = (
+                        "The patch proposal expired when Jarvis restarted; run the task again."
+                    )
+                    self.store.fail_run(approval["run_id"], message)
+                    self.store.fail_task(task["id"], message)
+                    await self._emit(task["id"], "failed", message)
+                    continue
+                await self._emit_event(
+                    {
+                        "task_id": task["id"],
+                        "status": "awaiting_approval",
+                        "message": "Review the recovered request.",
+                        "approval_id": approval["id"],
+                        "tool_name": approval["tool_name"],
+                        "arguments": approval["arguments"],
+                    }
+                )
         if not self._reminder_task or self._reminder_task.done():
             self._reminder_task = asyncio.create_task(
                 self._reminder_loop(), name="jarvis-reminder-loop"
@@ -480,6 +512,8 @@ class JarvisCore:
                     "status": "awaiting_approval",
                     "message": description,
                     "approval_id": approval_id,
+                    "tool_name": turn.tool_name,
+                    "arguments": turn.arguments,
                 }
             )
             result = self._result(task_id, "approval_required", description, run_id)
@@ -524,7 +558,22 @@ class JarvisCore:
         if tool_name == "write_file":
             return f"Write {len(str(arguments.get('content', '')))} characters to {arguments.get('path')}"
         if tool_name == "run_command":
-            return "Run: " + " ".join(str(item) for item in arguments.get("argv", []))
+            hosts = arguments.get("network_hosts") or []
+            network = (
+                "HTTPS to " + ", ".join(hosts) + " via a local inspecting proxy"
+                if hosts
+                else "offline"
+            )
+            if arguments.get("credential") == "openai":
+                network += "; use your OpenAI API key for one request (up to 64 KiB input and 2,048 output tokens; workspace data may be sent; charges may apply)"
+            return f"Run in a disposable Linux VM ({network}): " + " ".join(
+                str(item) for item in arguments.get("argv", [])
+            )
+        if tool_name == "run_native_command":
+            return (
+                f"Run a native Mac tool, which can execute project code and modify {arguments.get('cwd')}: "
+                + " ".join(str(item) for item in arguments.get("argv", []))
+            )
         if tool_name == "read_clipboard":
             return "Read clipboard text and send it to the configured model"
         if tool_name == "list_calendar_events":

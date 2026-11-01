@@ -22,7 +22,8 @@ def test_resolve_allowed_blocks_escape(tmp_path: Path) -> None:
 
 
 def test_redaction_removes_common_secrets() -> None:
-    assert "sk-example" not in redact_text("Authorization: Bearer sk-example-secret-123456789")
+    token = "sk-test-" + "x" * 32
+    assert token not in redact_text(f"Authorization: Bearer {token}")
     assert redact({"api_key": "secret", "nested": ["password=hunter2"]})["api_key"] == "[REDACTED]"
 
 
@@ -34,19 +35,26 @@ def test_colon_separated_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert configured.allowed_roots == (first.resolve(), second.resolve())
 
 
-def test_settings_require_an_authorized_root() -> None:
-    with pytest.raises(ValueError, match="at least one folder"):
-        Settings(_env_file=None, jarvis_allowed_roots=[])
+def test_all_filesystem_roots_can_be_revoked() -> None:
+    configured = Settings(_env_file=None, jarvis_allowed_roots=[])
+    assert configured.allowed_roots == ()
+    with pytest.raises(AccessDenied):
+        resolve_allowed("/tmp/any-file", configured.allowed_roots)
 
 
-def test_native_commands_are_disabled_by_default(tmp_path: Path) -> None:
+def test_empty_filesystem_scope_survives_backend_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JARVIS_ALLOWED_ROOTS", "")
+    assert Settings(_env_file=None).allowed_roots == ()
+
+
+def test_vm_commands_can_be_disabled(tmp_path: Path) -> None:
     configured = Settings(_env_file=None, jarvis_allowed_roots=[tmp_path])
     names = {definition.get("name") for definition in ToolExecutor(configured).definitions}
-    assert "run_command" not in names
-
-    configured.jarvis_enable_commands = True
-    names = {definition.get("name") for definition in ToolExecutor(configured).definitions}
     assert "run_command" in names
+
+    configured.jarvis_enable_commands = False
+    names = {definition.get("name") for definition in ToolExecutor(configured).definitions}
+    assert "run_command" not in names
 
 
 @pytest.mark.asyncio
@@ -75,6 +83,38 @@ async def test_updated_scope_is_enforced_at_tool_execution(tmp_path: Path) -> No
     assert denied["ok"] is False
     assert "outside configured roots" in denied["error"]
     assert resolve_allowed(second / "two.txt", configured.allowed_roots) == second / "two.txt"
+
+
+@pytest.mark.asyncio
+async def test_protected_credentials_are_denied_under_broad_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    secret_dir = tmp_path / ".ssh"
+    secret_dir.mkdir()
+    (secret_dir / "id_key").write_text("private")
+    executor = ToolExecutor(Settings(_env_file=None, jarvis_allowed_roots=[tmp_path]))
+    result = await executor.execute(
+        "read_file",
+        {
+            "path": str(secret_dir / "id_key"),
+            "offset": 0,
+            "max_chars": 100,
+        },
+    )
+    assert not result["ok"]
+    assert "protected" in result["error"]
+    result = await executor.execute(
+        "search_files",
+        {
+            "root": str(tmp_path),
+            "query": "private",
+            "search_contents": True,
+            "limit": 10,
+        },
+    )
+    assert not result["ok"]
+    assert "protected" in result["error"]
 
 
 def test_prompt_injection_is_flagged_as_untrusted() -> None:

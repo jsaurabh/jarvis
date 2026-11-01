@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,7 @@ class PhoenixServer:
         return [
             sys.executable,
             "-m",
-            "phoenix.server.main",
+            "jarvis.phoenix_local",
             "serve",
             "--host",
             "127.0.0.1",
@@ -81,36 +82,58 @@ class PhoenixServer:
 
     def start(self, timeout: float = 30.0) -> None:
         if self.healthy:
-            return
+            raise RuntimeError(f"Trace viewer port {self.port} is already in use")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = self.database_path.with_suffix(".log")
         self._log = log_path.open("ab")
-        self.process = subprocess.Popen(
-            self.command(),
-            stdin=subprocess.DEVNULL,
-            stdout=self._log,
-            stderr=subprocess.STDOUT,
-            env=self.environment(),
-            start_new_session=True,
+        try:
+            self.process = subprocess.Popen(
+                [sys.executable, "-m", "jarvis.process_supervisor", *self.command()],
+                stdin=subprocess.DEVNULL,
+                stdout=self._log,
+                stderr=subprocess.STDOUT,
+                env=self.environment(),
+                start_new_session=True,
+            )
+            self._owned = True
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if self.healthy and self._owns_listener():
+                    logging.info("Local Phoenix trace viewer: %s", self.url)
+                    return
+                if self.process.poll() is not None:
+                    raise RuntimeError(f"Phoenix exited during startup; see {log_path}")
+                time.sleep(0.1)
+            raise RuntimeError(f"Phoenix did not become ready; see {log_path}")
+        except BaseException:
+            self.stop()
+            raise
+
+    def _owns_listener(self) -> bool:
+        if self.process is None or self.process.poll() is not None:
+            return False
+        result = subprocess.run(
+            ["/usr/sbin/lsof", "-nP", "-t", f"-iTCP:{self.port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
         )
-        self._owned = True
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.healthy:
-                logging.info("Local Phoenix trace viewer: %s", self.url)
-                return
-            if self.process.poll() is not None:
-                raise RuntimeError(f"Phoenix exited during startup; see {log_path}")
-            time.sleep(0.1)
-        raise RuntimeError(f"Phoenix did not become ready; see {log_path}")
+        try:
+            listeners = [int(pid) for pid in result.stdout.splitlines()]
+            return bool(listeners) and all(os.getpgid(pid) == self.process.pid for pid in listeners)
+        except (ValueError, ProcessLookupError):
+            return False
 
     def stop(self) -> None:
         if self._owned and self.process and self.process.poll() is None:
-            self.process.terminate()
+            with suppress(ProcessLookupError):
+                os.killpg(self.process.pid, signal.SIGTERM)
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                with suppress(ProcessLookupError):
+                    os.killpg(self.process.pid, signal.SIGKILL)
                 self.process.wait(timeout=2)
         self.process = None
         self._owned = False

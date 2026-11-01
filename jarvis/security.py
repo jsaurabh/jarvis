@@ -10,6 +10,31 @@ class AccessDenied(ValueError):
     pass
 
 
+def protected_paths() -> tuple[Path, ...]:
+    home = Path.home()
+    return tuple(
+        (home / item).resolve()
+        for item in (
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".kube",
+            ".config/gh",
+            "Library/Keychains",
+            "Library/Mail",
+            "Library/Messages",
+            "Library/Application Support/Google/Chrome",
+            "Library/Application Support/Firefox/Profiles",
+        )
+    )
+
+
+def require_unprotected(path: Path, *, recursive: bool = False) -> None:
+    for protected in protected_paths():
+        if path.is_relative_to(protected) or (recursive and protected.is_relative_to(path)):
+            raise AccessDenied("This operation would access a protected location")
+
+
 def resolve_allowed(path: str | Path, roots: tuple[Path, ...]) -> Path:
     candidate = Path(path).expanduser().resolve()
     for root in roots:

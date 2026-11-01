@@ -203,11 +203,18 @@ class TraceStore:
         self.set_run_context(run_id, context)
         if metadata:
             self.event(run_id, "realtime_metadata", metadata)
+        status = metadata.get("status", "completed")
         self.finish_run(run_id, assistant_text)
+        if status == "cancelled":
+            self.cancel_run(run_id, "Voice response interrupted")
+        elif status == "failed":
+            self.fail_run(run_id, str(metadata.get("error") or "Voice response failed"))
         return run_id
 
     def set_run_context(self, run_id: str, context: dict[str, Any]) -> None:
         clean = redact(context)
+        if self.trace_mode != "full":
+            clean = {k: v for k, v in clean.items() if k not in {"instructions", "tools", "skills"}}
         schema = str(clean.get("schema", "jarvis.harness.v1"))
         with self._lock:
             self._conn.execute(
@@ -240,7 +247,7 @@ class TraceStore:
         if self.trace_mode == "off":
             return
         clean = redact(payload)
-        if self.trace_mode == "metadata" and kind in {"model_output", "tool_result", "tool_call"}:
+        if self.trace_mode == "metadata":
             clean = {"recorded": False, "reason": "metadata trace mode"}
         with self._lock:
             self._conn.execute(

@@ -36,9 +36,8 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
   private var interruptedItems = Set<String>()
   private var interruptionCount = 0
 
-  private var latestUserTranscript = ""
+  private let traceLedger = VoiceTraceLedger()
   private var responseTranscripts: [String: String] = [:]
-  private var pendingAssistantTurn: (text: String, metadata: [String: Any])?
   private var turnToolItems: [[String: Any]] = []
   private var speechStartedAt: Date?
   private var speechStoppedAt: Date?
@@ -48,6 +47,9 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
   init(apiKey: String) {
     self.apiKey = apiKey
     super.init()
+    traceLedger.emit = { [weak self] user, answer, metadata in
+      self?.onCompletedTurn?(user, answer, metadata)
+    }
   }
 
   func start() {
@@ -64,6 +66,7 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
     reconnectWorkItem = nil
     keepaliveTimer?.invalidate()
     keepaliveTimer = nil
+    traceLedger.disconnected()
     stopAudio()
     socket?.cancel(with: .goingAway, reason: nil)
     socket = nil
@@ -173,7 +176,7 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
       The user may interrupt you at any time. Yield immediately and respond to the new request.
       For ordinary conversation, answer directly.
       For anything that depends on files, applications, devices, mounted drives, current web information, or taking an action, call run_local_agent with the complete request. Never claim that local work succeeded unless its result says so.
-      If run_local_agent returns approval_required, briefly ask the user to approve or deny it. After their answer, call resolve_local_approval with the supplied approval_id.
+      If run_local_agent returns approval_required, tell the user to review the request in the Jarvis menu. You cannot approve actions yourself.
       If the user asks what you are doing, call get_agent_status. If the user asks you to stop or cancel ongoing work, call cancel_agent_task.
       If the user explicitly says to remember something, call remember_memory. Do not save inferred facts or sensitive information the user did not explicitly ask you to remember. Saved memories are local and are not automatically added to conversations.
       If the user asks to create, list, or cancel a reminder, use the reminder tools. Current time is \(currentTimestamp), timezone \(currentTimeZone). Convert relative times to an ISO 8601 timestamp with an explicit offset; ask if the requested time is ambiguous.
@@ -192,21 +195,6 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
             "request": ["type": "string", "description": "The user's complete request."]
           ],
           "required": ["request"],
-          "additionalProperties": false,
-        ],
-      ],
-      [
-        "type": "function",
-        "name": "resolve_local_approval",
-        "description":
-          "Approve or deny the pending local action after the user explicitly answers.",
-        "parameters": [
-          "type": "object",
-          "properties": [
-            "approval_id": ["type": "string"],
-            "approved": ["type": "boolean"],
-          ],
-          "required": ["approval_id", "approved"],
           "additionalProperties": false,
         ],
       ],
@@ -534,6 +522,12 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
   private func handleServerEvent(_ event: [String: Any]) {
     guard let type = event["type"] as? String else { return }
     switch type {
+    case "input_audio_buffer.committed":
+      if let item = event["item_id"] as? String { traceLedger.committed(item) }
+    case "response.created":
+      if let response = event["response"] as? [String: Any], let id = response["id"] as? String {
+        traceLedger.started(id)
+      }
     case "session.updated":
       NSLog("Jarvis Realtime session ready")
       onStatus?("Listening — live")
@@ -542,7 +536,6 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
       speechStartedAt = Date()
       speechStoppedAt = nil
       firstAudioAt = nil
-      turnToolItems.removeAll(keepingCapacity: true)
       onStatus?("Listening")
       interruptPlaybackIfNeeded()
     case "input_audio_buffer.speech_stopped":
@@ -550,11 +543,12 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
       speechStoppedAt = Date()
       onStatus?("Thinking")
     case "conversation.item.input_audio_transcription.completed":
-      latestUserTranscript = (event["transcript"] as? String ?? "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      if let pending = pendingAssistantTurn, !latestUserTranscript.isEmpty {
-        pendingAssistantTurn = nil
-        emitCompletedTurn(assistant: pending.text, metadata: pending.metadata)
+      if let item = event["item_id"] as? String {
+        traceLedger.transcribed(item, text: event["transcript"] as? String ?? "")
+      }
+    case "conversation.item.input_audio_transcription.failed":
+      if let item = event["item_id"] as? String {
+        traceLedger.transcribed(item, text: "[transcription failed]")
       }
     case "response.output_audio.delta":
       guard let itemID = event["item_id"] as? String,
@@ -571,6 +565,7 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
         let delta = event["delta"] as? String
       else { return }
       responseTranscripts[responseID, default: ""] += delta
+      traceLedger.delta(responseID, text: delta)
     case "response.function_call_arguments.done":
       handleFunctionCall(event)
     case "response.done":
@@ -701,30 +696,17 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
     if let stopped = speechStoppedAt, let first = firstAudioAt {
       metadata["time_to_first_audio_ms"] = max(0, Int(first.timeIntervalSince(stopped) * 1000))
     }
-    if status == "completed", !assistant.isEmpty {
-      if latestUserTranscript.isEmpty {
-        pendingAssistantTurn = (assistant, metadata)
-      } else {
-        emitCompletedTurn(assistant: assistant, metadata: metadata)
-      }
-      interruptionCount = 0
-    }
+    metadata["status"] =
+      status == "completed" ? "completed" : status == "failed" ? "failed" : "cancelled"
+    metadata["status_details"] = response["status_details"]
+    traceLedger.completed(responseID, answer: assistant, metadata: metadata)
+    turnToolItems.removeAll(keepingCapacity: true)
+    interruptionCount = 0
     if status == "failed" {
       onStatus?("Live response failed")
     } else if !player.isPlaying {
       onStatus?("Listening — live")
     }
-  }
-
-  private func emitCompletedTurn(assistant: String, metadata: [String: Any]) {
-    guard !latestUserTranscript.isEmpty else { return }
-    let user = latestUserTranscript
-    latestUserTranscript = ""
-    onCompletedTurn?(user, assistant, metadata)
-    turnToolItems.removeAll(keepingCapacity: true)
-    speechStartedAt = nil
-    speechStoppedAt = nil
-    firstAudioAt = nil
   }
 
   private func send(_ object: [String: Any]) {
@@ -744,6 +726,9 @@ final class RealtimeVoiceController: NSObject, URLSessionWebSocketDelegate {
       self.reconnectPending = true
       self.keepaliveTimer?.invalidate()
       self.keepaliveTimer = nil
+      self.traceLedger.disconnected()
+      self.responseTranscripts.removeAll()
+      self.turnToolItems.removeAll()
       self.stopAudio()
       self.socket?.cancel(with: .abnormalClosure, reason: nil)
       self.socket = nil

@@ -330,9 +330,12 @@ def trajectory_v2(store: Any, run: dict[str, Any]) -> dict[str, Any]:
 def agent_sft_row(store: Any, run: dict[str, Any]) -> dict[str, Any]:
     context = store.run_context(run["id"]) or {}
     target = run.get("correction") or run.get("assistant_text") or ""
+    messages = messages_for_run(store, run, target)
+    if context.get("instructions"):
+        messages.insert(0, {"role": "system", "content": context["instructions"]})
     return {
         "schema": AGENT_SFT_SCHEMA,
-        "messages": messages_for_run(store, run, target),
+        "messages": messages,
         "tools": context.get("tools", []),
         "metadata": {
             "run_id": run["id"],

@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
+
+from .local_model import chat_tools
 
 
 def load_examples(path: Path) -> list[dict[str, Any]]:
@@ -41,6 +44,10 @@ def train_lora(
     learning_rate: float,
     max_length: int,
 ) -> None:
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("Training output must be a new or empty directory")
+    if epochs <= 0 or learning_rate <= 0 or max_length <= 0:
+        raise ValueError("Training parameters must be positive")
     try:
         import torch
         from datasets import Dataset
@@ -64,50 +71,45 @@ def train_lora(
     loss_modes: set[str] = set()
 
     def tokenize(row: dict[str, Any]) -> dict[str, Any]:
-        template_kwargs: dict[str, Any] = {
-            "conversation": row["messages"],
-            "tokenize": True,
-            "add_generation_prompt": False,
-            "return_dict": True,
-            "return_assistant_tokens_mask": True,
-            "truncation": True,
-            "max_length": max_length,
-        }
-        if row.get("tools"):
-            template_kwargs["tools"] = row["tools"]
-        try:
-            encoded = tokenizer.apply_chat_template(**template_kwargs)
-            mask = encoded.pop("assistant_masks", encoded.pop("assistant_tokens_mask", None))
-            input_ids = list(encoded["input_ids"])
-            if mask and any(mask):
-                labels = [
-                    token if keep else -100 for token, keep in zip(input_ids, mask, strict=False)
-                ]
-                loss_modes.add("assistant_only")
-            else:
-                labels = input_ids.copy()
-                loss_modes.add("full_sequence_fallback")
-            return {
-                "input_ids": input_ids,
-                "attention_mask": list(encoded.get("attention_mask", [1] * len(input_ids))),
-                "labels": labels,
-            }
-        except (TypeError, ValueError):
-            render_kwargs: dict[str, Any] = {
-                "conversation": row["messages"],
-                "tokenize": False,
-                "add_generation_prompt": False,
-            }
-            if row.get("tools"):
-                render_kwargs["tools"] = row["tools"]
-            text = tokenizer.apply_chat_template(**render_kwargs)
-            encoded = tokenizer(text, truncation=True, max_length=max_length, padding=False)
-            loss_modes.add("full_sequence_fallback")
-            return {
-                "input_ids": encoded["input_ids"],
-                "attention_mask": encoded["attention_mask"],
-                "labels": list(encoded["input_ids"]),
-            }
+        messages = row["messages"]
+        kwargs = {"tools": chat_tools(row["tools"])} if row.get("tools") else {}
+        ids = list(
+            tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=False, **kwargs
+            )
+        )
+        if len(ids) > max_length:
+            raise ValueError(
+                "Training example exceeds max_length; split it without losing tool context"
+            )
+        labels = [-100] * len(ids)
+        for index, message in enumerate(messages):
+            if message.get("role") != "assistant":
+                continue
+            prefix = list(
+                tokenizer.apply_chat_template(
+                    messages[:index], tokenize=True, add_generation_prompt=True, **kwargs
+                )
+            )
+            completed = list(
+                tokenizer.apply_chat_template(
+                    messages[: index + 1], tokenize=True, add_generation_prompt=False, **kwargs
+                )
+            )
+            common = 0
+            for left, right in zip(prefix, completed, strict=False):
+                if left != right:
+                    break
+                common += 1
+            if ids[: len(completed)] != completed:
+                raise ValueError(
+                    "Chat template rewrites earlier messages; assistant masking is unsafe"
+                )
+            labels[common : len(completed)] = ids[common : len(completed)]
+        if not any(label != -100 for label in labels):
+            raise ValueError("Training example has no assistant target tokens")
+        loss_modes.add("assistant_only")
+        return {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labels}
 
     tokenized = dataset.map(tokenize, batched=False, remove_columns=dataset.column_names)
 
@@ -136,9 +138,13 @@ def train_lora(
     model = AutoModelForCausalLM.from_pretrained(
         base_model, torch_dtype=dtype, trust_remote_code=False
     )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_path = output_dir.resolve() / "base-model"
+    model.save_pretrained(base_path, safe_serialization=True)
     model = get_peft_model(
         model,
         LoraConfig(
+            target_modules="all-linear",
             r=16,
             lora_alpha=32,
             lora_dropout=0.05,
@@ -157,6 +163,7 @@ def train_lora(
         save_strategy="epoch",
         report_to=[],
         remove_unused_columns=False,
+        use_cpu=os.environ.get("JARVIS_TRAIN_CPU") == "1",
     )
     trainer = Trainer(
         model=model,
@@ -169,7 +176,8 @@ def train_lora(
     tokenizer.save_pretrained(output_dir)
     manifest = {
         "schema": "jarvis.model.v1",
-        "base_model": base_model,
+        "base_model": "base-model",
+        "source_base_model": base_model,
         "dataset": str(dataset_path.resolve()),
         "dataset_sha256": file_sha256(dataset_path),
         "examples": len(examples),

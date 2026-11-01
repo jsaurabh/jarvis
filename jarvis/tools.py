@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .broker import BrokerClient, ExecutionBroker
+from .broker_authority import PLATFORM_APPROVAL_OPERATIONS, PLATFORM_READ_OPERATIONS
+from .broker_channel import inherited_agent_channel
 from .config import Settings
+from .execution import CommandExecutor, FileExecutor, NonoFileExecutor, ShuruExecutor
 from .security import AccessDenied, prompt_injection_warning, redact_text, resolve_allowed
 
 FUNCTION_TOOLS: list[dict[str, Any]] = [
@@ -90,7 +95,50 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "run_command",
-        "description": "Run a local program without a shell. Pass the executable and each argument separately. Always requires human approval.",
+        "description": "Run a Linux program in a disposable VM. Network is off unless exact HTTPS hosts are approved. Changes do not persist. Always requires human approval.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 64,
+                },
+                "cwd": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+                "preview_changes": {
+                    "type": "boolean",
+                    "description": "Request a host-generated change preview. Changes are not applied.",
+                },
+                "network_hosts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 10,
+                    "description": "Exact HTTPS hosts to request; empty means offline.",
+                },
+                "credential": {
+                    "type": "string",
+                    "enum": ["none", "openai"],
+                    "description": "Named Keychain credential for a restricted proxy route; none by default.",
+                },
+            },
+            "required": [
+                "argv",
+                "cwd",
+                "timeout_seconds",
+                "preview_changes",
+                "network_hosts",
+                "credential",
+            ],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "run_native_command",
+        "description": "Run an approved macOS compiler in a network-disabled sandbox. It may change files in the approved working directory. Never use for untrusted projects. Requires approval.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -112,8 +160,22 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
 
 
 class ToolExecutor:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        file_executor: FileExecutor | None = None,
+        command_executor: CommandExecutor | None = None,
+    ) -> None:
         self.settings = settings
+        self.broker = (
+            ExecutionBroker(
+                settings,
+                file_executor or NonoFileExecutor(),
+                command_executor or ShuruExecutor(output_limit=settings.jarvis_tool_output_limit),
+            )
+            if file_executor is not None or command_executor is not None
+            else inherited_agent_channel() or BrokerClient(settings)
+        )
 
     @property
     def definitions(self) -> list[dict[str, Any]]:
@@ -121,7 +183,10 @@ class ToolExecutor:
         for definition in FUNCTION_TOOLS:
             if definition["name"] == "write_file" and not self.settings.jarvis_enable_writes:
                 continue
-            if definition["name"] == "run_command" and not self.settings.jarvis_enable_commands:
+            if (
+                definition["name"] in {"run_command", "run_native_command"}
+                and not self.settings.jarvis_enable_commands
+            ):
                 continue
             result.append(definition)
         if self.settings.jarvis_enable_web_search:
@@ -130,7 +195,7 @@ class ToolExecutor:
 
     def needs_approval(self, name: str, arguments: dict[str, Any]) -> bool:
         del arguments
-        return name in {"write_file", "run_command"}
+        return name in {"write_file", "run_command", "run_native_command", "apply_reviewed_patch"}
 
     def describe(self, name: str, arguments: dict[str, Any]) -> str:
         if name == "write_file":
@@ -149,6 +214,8 @@ class ToolExecutor:
             "search_files": self._search_files,
             "write_file": self._write_file,
             "run_command": self._run_command,
+            "run_native_command": self._run_native_command,
+            "apply_reviewed_patch": self._apply_reviewed_patch,
             "get_frontmost_application": self._get_frontmost_application,
             "list_running_applications": self._list_running_applications,
             "read_clipboard": self._read_clipboard,
@@ -164,13 +231,26 @@ class ToolExecutor:
         if name not in handlers:
             return {"ok": False, "error": f"Unknown local tool: {name}"}
         try:
-            result = await handlers[name](**arguments)
+            if name in {"list_directory", "read_file", "search_files", "write_file"}:
+                result = await self.broker.file(name, arguments)
+            elif name in PLATFORM_READ_OPERATIONS | PLATFORM_APPROVAL_OPERATIONS and callable(
+                getattr(self.broker, "platform", None)
+            ):
+                result = await self.broker.platform(name, arguments)
+            else:
+                result = await handlers[name](**arguments)
             return {"ok": True, "result": result}
         except (OSError, UnicodeError, AccessDenied, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
 
     async def _list_filesystem_roots(self) -> dict[str, Any]:
         return {"roots": [str(root) for root in self.settings.allowed_roots]}
+
+    async def _apply_reviewed_patch(self, patch_id: str, sha256: str) -> dict[str, Any]:
+        apply = getattr(self.broker, "apply_patch", None)
+        if not callable(apply):
+            raise AccessDenied("Reviewed patch application requires the isolated supervisor")
+        return await apply(patch_id, sha256)
 
     async def _list_directory(self, path: str, limit: int) -> dict[str, Any]:
         target = resolve_allowed(path, self.settings.allowed_roots)
@@ -198,7 +278,19 @@ class ToolExecutor:
             raise ValueError(f"Not a file: {target}")
         if target.stat().st_size > 20_000_000:
             raise ValueError("File is larger than the 20 MB local read limit")
-        text = target.read_text(encoding="utf-8", errors="replace")
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise AccessDenied("Refusing to read a non-regular or hard-linked file")
+            if metadata.st_size > 20_000_000:
+                raise ValueError("File is larger than the 20 MB local read limit")
+            with os.fdopen(fd, encoding="utf-8", errors="replace") as file:
+                fd = -1
+                text = file.read()
+        finally:
+            if fd != -1:
+                os.close(fd)
         chunk = redact_text(text[offset : offset + max_chars])
         result = {
             "path": str(target),
@@ -225,11 +317,27 @@ class ToolExecutor:
                 path = Path(current) / filename
                 if needle in filename.casefold():
                     matches.append({"path": str(path), "match": "name"})
-                elif search_contents and path.stat().st_size <= 2_000_000:
+                elif search_contents:
                     try:
-                        content = path.read_text(encoding="utf-8", errors="ignore")
+                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                     except OSError:
                         continue
+                    try:
+                        info = os.fstat(fd)
+                        if (
+                            not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                            or info.st_size > 2_000_000
+                        ):
+                            continue
+                        with os.fdopen(fd, encoding="utf-8", errors="ignore") as file:
+                            fd = -1
+                            content = file.read(2_000_001)
+                        if len(content) > 2_000_000:
+                            continue
+                    finally:
+                        if fd != -1:
+                            os.close(fd)
                     index = content.casefold().find(needle)
                     if index >= 0:
                         snippet = redact_text(content[max(0, index - 100) : index + 300])
@@ -254,37 +362,37 @@ class ToolExecutor:
             target.parent.mkdir(parents=True, exist_ok=True)
         elif not target.parent.is_dir():
             raise ValueError(f"Parent directory does not exist: {target.parent}")
-        target.write_text(content, encoding="utf-8")
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise AccessDenied("Refusing to write a non-regular or hard-linked file")
+            os.ftruncate(fd, 0)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                fd = -1
+                file.write(content)
+        finally:
+            if fd != -1:
+                os.close(fd)
         return {"path": str(target), "characters": len(content)}
 
-    async def _run_command(self, argv: list[str], cwd: str, timeout_seconds: int) -> dict[str, Any]:
-        if not self.settings.jarvis_enable_commands:
-            raise AccessDenied("Commands are disabled")
-        working_directory = resolve_allowed(cwd, self.settings.allowed_roots)
-        if not working_directory.is_dir():
-            raise ValueError(f"Not a directory: {working_directory}")
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=working_directory,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._sanitized_environment(),
+    async def _run_command(
+        self,
+        argv: list[str],
+        cwd: str,
+        timeout_seconds: int,
+        preview_changes: bool = False,
+        network_hosts: list[str] | None = None,
+        credential: str = "none",
+    ) -> dict[str, Any]:
+        return await self.broker.command(
+            argv, cwd, timeout_seconds, preview_changes, network_hosts, credential
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-        except TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise ValueError(f"Command timed out after {timeout_seconds} seconds") from exc
-        return {
-            "exit_code": process.returncode,
-            "stdout": redact_text(
-                stdout.decode(errors="replace")[: self.settings.jarvis_tool_output_limit]
-            ),
-            "stderr": redact_text(
-                stderr.decode(errors="replace")[: self.settings.jarvis_tool_output_limit]
-            ),
-        }
+
+    async def _run_native_command(
+        self, argv: list[str], cwd: str, timeout_seconds: int
+    ) -> dict[str, Any]:
+        return await self.broker.native(argv, cwd, timeout_seconds)
 
     async def _get_frontmost_application(self) -> dict[str, Any]:
         output = await self._run_program(

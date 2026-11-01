@@ -77,6 +77,62 @@ async def test_task_approval_is_persisted_and_resumed(tmp_path: Path) -> None:
     assert store.get_task(completed["task_id"])["status"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_confined_restart_reemits_pending_request_for_supervisor_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = make_settings(tmp_path)
+    store = TraceStore(settings.jarvis_db_path)
+    session = store.create_session()
+    original = JarvisCore(settings, store=store, agent=FakeSDKAgent(approval=True))
+    pending = await original.submit(session, "write the result")
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    monkeypatch.setenv("JARVIS_CONFINED_AGENT", "1")
+    restarted = JarvisCore(settings, store=store, agent=FakeSDKAgent(), event_sink=capture)
+    await restarted.start()
+    try:
+        recovered = next(
+            event for event in events if event.get("approval_id") == pending["approval"]["id"]
+        )
+        assert recovered["tool_name"] == "write_file"
+        assert recovered["arguments"]["content"] == "done"
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_confined_restart_does_not_replay_lost_patch_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PatchAgent(FakeSDKAgent):
+        async def chat(self, session_id: str, text: str) -> SDKTurn:
+            return SDKTurn(
+                status="approval_required",
+                checkpoint={"saved": True},
+                tool_name="apply_reviewed_patch",
+                arguments={"patch_id": "lost", "sha256": "0" * 64},
+                call_id="call-1",
+            )
+
+    settings = make_settings(tmp_path)
+    store = TraceStore(settings.jarvis_db_path)
+    session = store.create_session()
+    original = JarvisCore(settings, store=store, agent=PatchAgent())
+    pending = await original.submit(session, "apply the patch")
+    monkeypatch.setenv("JARVIS_CONFINED_AGENT", "1")
+    restarted = JarvisCore(settings, store=store, agent=FakeSDKAgent())
+    await restarted.start()
+    try:
+        assert store.get_task(pending["task_id"])["status"] == "failed"
+        assert store.get_task_approval(pending["approval"]["id"])["status"] == "denied"
+    finally:
+        await restarted.close()
+
+
 def test_restart_recovery_only_requeues_safe_tasks(tmp_path: Path) -> None:
     store = TraceStore(tmp_path / "jarvis.db")
     session = store.create_session()

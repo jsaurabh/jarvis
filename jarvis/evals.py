@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,17 @@ def main() -> None:
         description="Evaluate and gate the Jarvis improvement flywheel"
     )
     parser.add_argument(
-        "action", choices=["report", "snapshot", "export", "bundle", "register", "promote"]
+        "action",
+        choices=[
+            "report",
+            "snapshot",
+            "export",
+            "bundle",
+            "register",
+            "evaluate",
+            "promote",
+            "use-cloud",
+        ],
     )
     parser.add_argument("--db", type=Path, default=settings.jarvis_db_path)
     parser.add_argument("--output", type=Path, default=Path("exports/jarvis-sft.jsonl"))
@@ -45,6 +56,9 @@ def main() -> None:
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--base-model", default=settings.jarvis_model)
     parser.add_argument("--bundle-dir", type=Path, default=Path("exports/flywheel"))
+    parser.add_argument("--registry", type=Path, default=settings.jarvis_model_registry)
+    parser.add_argument("--cases", type=Path)
+    parser.add_argument("--baseline")
     args = parser.parse_args()
     store = TraceStore(args.db, "full")
 
@@ -61,27 +75,43 @@ def main() -> None:
         print(
             json.dumps(build_improvement_bundle(store, args.bundle_dir), indent=2, sort_keys=True)
         )
-    elif args.action == "register":
-        if not args.name or not args.artifact:
-            parser.error("register requires --name and --artifact")
-        if not args.artifact.exists():
-            parser.error("model artifact does not exist")
-        latest = store.latest_eval_snapshot()
-        if not latest or not latest["passed"]:
-            parser.error("a passing evaluation snapshot is required before registration")
-        store.register_model(
-            args.name, str(args.artifact.resolve()), args.base_model, latest["metrics"]
+    elif args.action in {"register", "evaluate", "promote", "use-cloud"}:
+        from .model_lifecycle import (
+            atomic_json,
+            evaluate_candidate,
+            promote,
+            read_registry,
+            register,
         )
-        print(f"Registered candidate model {args.name}")
-    elif args.action == "promote":
-        if not args.name:
-            parser.error("promote requires --name")
-        latest = store.latest_eval_snapshot()
-        if not latest or not latest["passed"]:
-            parser.error("a passing evaluation snapshot is required before promotion")
-        if not store.promote_model(args.name):
-            parser.error("candidate model not found")
-        print(f"Promoted model {args.name}")
+
+        try:
+            if args.action == "use-cloud":
+                registry = read_registry(args.registry)
+                registry["active"] = None
+                atomic_json(args.registry, registry)
+                print("Configured OpenAI model selected; restart Jarvis to apply.")
+            else:
+                if not args.name:
+                    parser.error("--name is required")
+                if args.action == "register":
+                    if not args.artifact:
+                        parser.error("register requires --artifact")
+                    register(args.registry, args.name, args.artifact)
+                    print(f"Registered candidate {args.name}; candidate evaluation is required.")
+                elif args.action == "evaluate":
+                    if not args.cases:
+                        parser.error("evaluate requires --cases")
+                    report = asyncio.run(
+                        evaluate_candidate(args.registry, args.name, args.cases, args.baseline)
+                    )
+                    print(json.dumps(report, indent=2))
+                    if not report["passed"]:
+                        raise SystemExit(1)
+                else:
+                    promote(args.registry, args.name)
+                    print(f"Promoted {args.name}; restart Jarvis to apply.")
+        except (ValueError, KeyError, OSError) as exc:
+            parser.error(str(exc))
 
 
 if __name__ == "__main__":

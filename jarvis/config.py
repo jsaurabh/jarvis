@@ -14,11 +14,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     jarvis_model: str = "gpt-6-luna"
     jarvis_base_url: str | None = None
+    jarvis_model_registry: Path = Path("./models/registry.json")
     jarvis_allowed_roots: Annotated[list[Path], NoDecode] = Field(
         default_factory=lambda: [Path.cwd()]
     )
     jarvis_enable_writes: bool = True
-    jarvis_enable_commands: bool = False
+    jarvis_enable_commands: bool = True
     jarvis_enable_web_search: bool = True
     jarvis_trace_mode: str = "full"
     jarvis_phoenix_port: int = 6006
@@ -41,8 +42,6 @@ class Settings(BaseSettings):
             resolved = path.expanduser().resolve()
             if resolved not in roots:
                 roots.append(resolved)
-        if not roots:
-            raise ValueError("JARVIS_ALLOWED_ROOTS must contain at least one folder")
         return roots
 
     @field_validator("jarvis_trace_mode")
@@ -68,4 +67,6 @@ class Settings(BaseSettings):
         return self.allowed_roots
 
 
-settings = Settings()
+settings = (
+    Settings(_env_file=None) if os.environ.get("JARVIS_WORKER_PROCESS") == "1" else Settings()
+)

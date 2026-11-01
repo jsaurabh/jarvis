@@ -29,8 +29,10 @@ Clarify the decision the research supports, prefer primary sources, track uncert
 class SkillStore:
     """Plain-text, user-inspectable capability instructions."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, read_only: bool = False) -> None:
         self.root = root.expanduser().resolve()
+        if read_only:
+            return
         self.root.mkdir(parents=True, exist_ok=True)
         for name, content in BUILTIN_SKILLS.items():
             path = self.root / f"{name}.md"

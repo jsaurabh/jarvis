@@ -35,3 +35,17 @@ Use `ruff format jarvis tests` and `swift format format --in-place --recursive m
 ## Generated and private files
 
 The `data/`, `exports/`, `models/`, `dist/`, and `.build/` directories are local runtime or build state and are intentionally ignored by Git.
+
+## Integration checks
+
+On a configured Apple silicon Mac, run the isolation and local training checks:
+
+```bash
+uv sync --extra dev --extra training
+JARVIS_TEST_SHURU=1 JARVIS_TEST_NETWORK=1 JARVIS_TRAINING_TEST=1 pytest -q
+```
+
+Shuru and Squid must be installed using Setup Jarvis or
+`zsh scripts/setup_sandbox.sh`. The training test uses synthetic data and a tiny
+local model. The billable OpenAI integration test remains separately opt-in via
+`JARVIS_LIVE_TEST=1`; never use personal files as its fixtures.

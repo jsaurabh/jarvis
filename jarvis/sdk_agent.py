@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from agents import (
     Agent,
     ModelSettings,
@@ -71,6 +73,14 @@ class SDKJarvisAgent:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured")
         client_args: dict[str, Any] = {"api_key": api_key}
+        if os.environ.get("JARVIS_CONFINED_AGENT") == "1":
+            gateway_port = os.environ.get("JARVIS_MODEL_GATE_PORT")
+            if gateway_port:
+                client_args["http_client"] = httpx.AsyncClient(
+                    trust_env=False,
+                    timeout=60,
+                )
+                client_args["base_url"] = f"http://127.0.0.1:{int(gateway_port)}/v1"
         if settings.jarvis_base_url:
             client_args["base_url"] = settings.jarvis_base_url
         set_default_openai_client(AsyncOpenAI(**client_args), use_for_tracing=False)
@@ -79,6 +89,9 @@ class SDKJarvisAgent:
         if settings.jarvis_trace_mode == "off":
             set_trace_processors([])
         self.observability = LocalObservability(settings)
+        configure_tracing = getattr(executor.broker, "set_tracer_provider", None)
+        if self.observability.provider is not None and callable(configure_tracing):
+            configure_tracing(self.observability.provider)
 
         tools: list[Any] = self._local_tools()
         if settings.jarvis_enable_web_search:
@@ -173,11 +186,41 @@ class SDKJarvisAgent:
             )
 
         @function_tool(name_override="run_command", needs_approval=True)
-        async def run_command(argv: list[str], cwd: str, timeout_seconds: int) -> dict[str, Any]:
-            """Run a local program without a shell after explicit human approval."""
+        async def run_command(
+            argv: list[str],
+            cwd: str,
+            timeout_seconds: int,
+            preview_changes: bool,
+            network_hosts: list[str],
+            credential: str,
+        ) -> dict[str, Any]:
+            """Run Linux code in a VM after approval. Provide exact HTTPS network_hosts, or an empty list for offline. Set credential to 'none', or 'openai' only if the user explicitly asks to use the OpenAI key. File changes are discarded. For a preview, inspect host_review or review_error."""
             return await executor.execute(
                 "run_command",
-                {"argv": argv, "cwd": cwd, "timeout_seconds": timeout_seconds},
+                {
+                    "argv": argv,
+                    "cwd": cwd,
+                    "timeout_seconds": timeout_seconds,
+                    "preview_changes": preview_changes,
+                    "network_hosts": network_hosts,
+                    "credential": credential,
+                },
+            )
+
+        @function_tool(name_override="run_native_command", needs_approval=True)
+        async def run_native_command(
+            argv: list[str], cwd: str, timeout_seconds: int
+        ) -> dict[str, Any]:
+            """Run an approved macOS compiler, offline, with write access to the working folder. Do not use for untrusted projects."""
+            return await executor.execute(
+                "run_native_command", {"argv": argv, "cwd": cwd, "timeout_seconds": timeout_seconds}
+            )
+
+        @function_tool(name_override="apply_reviewed_patch", needs_approval=True)
+        async def apply_reviewed_patch(patch_id: str, sha256: str) -> dict[str, Any]:
+            """Ask the user to review and apply a supervisor-prepared patch proposal."""
+            return await executor.execute(
+                "apply_reviewed_patch", {"patch_id": patch_id, "sha256": sha256}
             )
 
         @function_tool(name_override="get_frontmost_application")
@@ -264,8 +307,11 @@ class SDKJarvisAgent:
         ]
         if self.settings.jarvis_enable_writes:
             tools.append(write_file)
+            if callable(getattr(executor.broker, "apply_patch", None)):
+                tools.append(apply_reviewed_patch)
         if self.settings.jarvis_enable_commands:
             tools.append(run_command)
+            tools.append(run_native_command)
         if self.reminders:
             reminders = self.reminders
 
@@ -294,26 +340,35 @@ class SDKJarvisAgent:
             tools.extend([schedule_reminder, list_reminders, cancel_reminder])
         if self.skills:
             skills = self.skills
+            platform = getattr(executor.broker, "platform", None)
 
             @function_tool(name_override="list_skills")
             async def list_skills() -> list[dict[str, Any]]:
                 """List installed, user-inspectable Jarvis skills."""
+                if callable(platform):
+                    return (await platform("list_skills", {}))["skills"]
                 return skills.list()
 
             @function_tool(name_override="read_skill")
             async def read_skill(name: str) -> dict[str, Any]:
                 """Load one skill's operating instructions before applying that skill."""
+                if callable(platform):
+                    return await platform("read_skill", {"name": name})
                 return skills.read(name)
 
             @function_tool(name_override="save_skill", needs_approval=True)
             async def save_skill(name: str, content: str) -> dict[str, Any]:
                 """Create or update a local Jarvis skill after approval."""
+                if callable(platform):
+                    return await platform("save_skill", {"name": name, "content": content})
                 saved = skills.save(name, content)
                 return {"saved": True, "name": saved["name"]}
 
             @function_tool(name_override="delete_skill", needs_approval=True)
             async def delete_skill(name: str) -> dict[str, Any]:
                 """Delete a local Jarvis skill after approval."""
+                if callable(platform):
+                    return await platform("delete_skill", {"name": name})
                 return {"deleted": skills.delete(name), "name": name}
 
             tools.extend([list_skills, read_skill, save_skill, delete_skill])

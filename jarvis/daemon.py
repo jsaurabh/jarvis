@@ -38,7 +38,10 @@ class JsonLineDaemon:
             settings.jarvis_db_path.parent / "phoenix.db",
             settings.jarvis_phoenix_port,
         )
-        if settings.jarvis_trace_mode != "off":
+        if (
+            settings.jarvis_trace_mode != "off"
+            and os.environ.get("JARVIS_PHOENIX_MANAGED_EXTERNALLY") != "1"
+        ):
             self.phoenix.start()
         self.core = JarvisCore(settings, store=self.store, event_sink=self.emit)
         self._requests: set[asyncio.Task[None]] = set()
@@ -60,6 +63,12 @@ class JsonLineDaemon:
             if action == "chat":
                 result = await self.core.submit(self.session_id, str(payload["text"]))
             elif action == "approve":
+                grant = payload.get("broker_grant")
+                if os.environ.get("JARVIS_CONFINED_AGENT") == "1" and payload.get("approved"):
+                    if not isinstance(grant, dict):
+                        raise ValueError("A supervisor approval grant is required")
+                    broker = self.core.agent.executor.broker
+                    broker.add_grant(grant["operation"], grant["arguments"], grant["token"])
                 result = await self.core.resolve_approval(
                     str(payload["approval_id"]), bool(payload["approved"])
                 )
@@ -156,6 +165,13 @@ class JsonLineDaemon:
                     "message": "Filesystem access updated.",
                     "roots": [str(root) for root in configured],
                 }
+            elif action == "sandbox-selftest":
+                from .sandbox_check import verify_sandbox
+
+                provider = getattr(
+                    getattr(self.core.agent, "observability", None), "provider", None
+                )
+                result = await verify_sandbox(settings, provider)
             elif action == "ping":
                 result = {"status": "completed", "message": "Jarvis Core is ready."}
             elif action == "shutdown":

@@ -10,6 +10,8 @@ final class SetupController: NSObject, NSWindowDelegate {
   private let enableVoice: (@escaping PermissionCompletion) -> Void
   private let filesystemRoots: () -> [String]
   private let changeFilesystemRoots: ([String], @escaping PermissionCompletion) -> Void
+  private let installSandbox: (@escaping PermissionCompletion) -> Void
+  private let verifySandbox: (@escaping PermissionCompletion) -> Void
   private let onComplete: () -> Void
 
   private var window: NSWindow?
@@ -19,18 +21,23 @@ final class SetupController: NSObject, NSWindowDelegate {
   private weak var notificationStatus: NSTextField?
   private weak var accessibilityStatus: NSTextField?
   private weak var filesystemStatus: NSTextField?
+  private weak var sandboxStatus: NSTextField?
 
   init(
     changeAPIKey: @escaping (@escaping PermissionCompletion) -> Void,
     enableVoice: @escaping (@escaping PermissionCompletion) -> Void,
     filesystemRoots: @escaping () -> [String],
     changeFilesystemRoots: @escaping ([String], @escaping PermissionCompletion) -> Void,
+    installSandbox: @escaping (@escaping PermissionCompletion) -> Void,
+    verifySandbox: @escaping (@escaping PermissionCompletion) -> Void,
     onComplete: @escaping () -> Void
   ) {
     self.changeAPIKey = changeAPIKey
     self.enableVoice = enableVoice
     self.filesystemRoots = filesystemRoots
     self.changeFilesystemRoots = changeFilesystemRoots
+    self.installSandbox = installSandbox
+    self.verifySandbox = verifySandbox
     self.onComplete = onComplete
   }
 
@@ -44,7 +51,7 @@ final class SetupController: NSObject, NSWindowDelegate {
 
     completionSent = false
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 620, height: 710),
+      contentRect: NSRect(x: 0, y: 0, width: 620, height: 770),
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false
@@ -130,6 +137,10 @@ final class SetupController: NSObject, NSWindowDelegate {
     let filesystemStatus = statusLabel(filesystemPermissionText())
     self.filesystemStatus = filesystemStatus
     stack.addArrangedSubview(filesystemRow(detail: filesystemStatus))
+
+    let sandboxStatus = statusLabel(sandboxPermissionText())
+    self.sandboxStatus = sandboxStatus
+    stack.addArrangedSubview(sandboxRow(detail: sandboxStatus))
 
     stack.addArrangedSubview(
       row(
@@ -244,6 +255,26 @@ final class SetupController: NSObject, NSWindowDelegate {
     return row
   }
 
+  private func sandboxRow(detail: NSTextField) -> NSView {
+    let title = NSTextField(labelWithString: "Isolated execution")
+    title.font = .systemFont(ofSize: 13, weight: .medium)
+    let labels = NSStackView(views: [title, detail])
+    labels.orientation = .vertical
+    labels.alignment = .leading
+    labels.spacing = 2
+    let setup = NSButton(title: "Set up…", target: self, action: #selector(setupSandbox))
+    let test = NSButton(title: "Test", target: self, action: #selector(testSandbox))
+    let buttons = NSStackView(views: [setup, test])
+    buttons.orientation = .horizontal
+    buttons.spacing = 6
+    buttons.setContentHuggingPriority(.required, for: .horizontal)
+    let row = NSStackView(views: [labels, buttons])
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = 16
+    return row
+  }
+
   private func statusLabel(_ text: String) -> NSTextField {
     let label = NSTextField(labelWithString: text)
     label.textColor = .secondaryLabelColor
@@ -257,15 +288,60 @@ final class SetupController: NSObject, NSWindowDelegate {
     accessibilityStatus?.stringValue =
       AXIsProcessTrusted() ? "Allowed" : "Needed to control other applications"
     filesystemStatus?.stringValue = filesystemPermissionText()
+    sandboxStatus?.stringValue = sandboxPermissionText()
     refreshNotificationStatus()
   }
 
   private func filesystemPermissionText() -> String {
     let roots = filesystemRoots()
+    if roots.isEmpty { return "No folders authorized" }
     if roots == ["/"] { return "Entire Mac, subject to macOS permissions" }
     let abbreviated = roots.map { NSString(string: $0).abbreviatingWithTildeInPath }
     if abbreviated.count <= 2 { return abbreviated.joined(separator: ", ") }
     return "\(abbreviated.count) authorized locations"
+  }
+
+  private func sandboxPermissionText() -> String {
+    let files = FileManager.default
+    let versionURL = files.homeDirectoryForCurrentUser.appendingPathComponent(
+      ".local/share/shuru/VERSION")
+    let version = (try? String(contentsOf: versionURL, encoding: .utf8))?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if files.isExecutableFile(atPath: "/opt/homebrew/bin/shuru")
+      && files.isExecutableFile(atPath: "/opt/homebrew/opt/squid/sbin/squid")
+      && version == "0.11.0"
+    {
+      return "Installed; versions are verified when used"
+    }
+    return "Needed for isolated Linux commands and approved network access"
+  }
+
+  @objc private func setupSandbox(_ sender: NSButton) {
+    let alert = NSAlert()
+    alert.icon = NSApp.applicationIconImage
+    alert.messageText = "Set up isolated execution?"
+    alert.informativeText =
+      "Jarvis will install Shuru and Squid with Homebrew and download a Linux image. Homebrew may update dependencies."
+    alert.addButton(withTitle: "Set Up")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    sender.isEnabled = false
+    sandboxStatus?.stringValue = "Installing; this may take a few minutes…"
+    installSandbox { [weak self, weak sender] success in
+      sender?.isEnabled = true
+      self?.sandboxStatus?.stringValue =
+        success
+        ? self?.sandboxPermissionText() ?? "Installed" : "Setup failed; see the Jarvis setup log"
+    }
+  }
+
+  @objc private func testSandbox(_ sender: NSButton) {
+    sender.isEnabled = false
+    sandboxStatus?.stringValue = "Testing isolated execution and the OpenAI connection…"
+    verifySandbox { [weak self, weak sender] success in
+      sender?.isEnabled = true
+      self?.sandboxStatus?.stringValue = success ? "Verified" : "Test failed; see the error"
+    }
   }
 
   private func voicePermissionText() -> String {
@@ -347,17 +423,13 @@ final class SetupController: NSObject, NSWindowDelegate {
     let alert = NSAlert()
     alert.icon = NSApp.applicationIconImage
     alert.messageText = "Remove file access"
-    alert.informativeText =
-      roots.count == 1
-      ? "Jarvis must retain at least one authorized location. Removing this location will restore access to your Home folder."
-      : "Choose the location Jarvis should no longer access."
+    alert.informativeText = "Choose the location Jarvis should no longer access."
     alert.accessoryView = picker
     alert.addButton(withTitle: "Remove Access")
     alert.addButton(withTitle: "Cancel")
     guard alert.runModal() == .alertFirstButtonReturn else { return }
     var updated = roots
     updated.remove(at: picker.indexOfSelectedItem)
-    if updated.isEmpty { updated = [FileManager.default.homeDirectoryForCurrentUser.path] }
     applyFilesystemRoots(updated)
   }
 

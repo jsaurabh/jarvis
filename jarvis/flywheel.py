@@ -37,21 +37,21 @@ def build_improvement_bundle(store: Any, output_dir: Path) -> dict[str, Any]:
     for run in runs:
         if not run.get("correction"):
             continue
-        eval_cases.append(
-            {
-                "id": f"correction-{run['id']}",
-                "input": run["user_text"],
-                "expected": run["correction"],
-                "source_run_id": run["id"],
-                "grader": "semantic_and_tool_policy",
-            }
-        )
+        case = {
+            "id": f"correction-{run['id']}",
+            "input": run["user_text"],
+            "expected": run["correction"],
+            "source_run_id": run["id"],
+            "grader": "semantic_and_tool_policy",
+        }
+        if not sensitive_reasons(case):
+            eval_cases.append(case)
     eval_path = output_dir / "regression-cases.jsonl"
     with eval_path.open("w", encoding="utf-8") as handle:
         for case in eval_cases:
             handle.write(json.dumps(case, ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    contexts = store.distinct_harness_contexts()
+    contexts = [c for c in store.distinct_harness_contexts() if not sensitive_reasons(c)]
     harness_path = output_dir / "harness-snapshots.json"
     harness_path.write_text(
         json.dumps(contexts, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
