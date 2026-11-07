@@ -11,7 +11,7 @@ dependencies = [
   "openinference-instrumentation-openai-agents>=2.6,<3",
   "opentelemetry-exporter-otlp-proto-http>=1.38,<2",
   "opentelemetry-sdk>=1.38,<2",
-  "arize-phoenix>=20.9,<21",
+  "arize-phoenix>=20.9,<22",
   "pydantic-settings>=2.6,<3",
   "nono-py==0.16.0",
   "h11>=0.16,<1",
